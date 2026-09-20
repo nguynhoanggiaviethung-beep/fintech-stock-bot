@@ -180,6 +180,7 @@ class StockScanner:
                 self.signal_engine.analyze(
                     fundamental_df=fundamental_df,
                     market_df=market_df,
+                    symbol=symbol,
                 )
             )
 
@@ -344,6 +345,7 @@ class StockScanner:
                     self.signal_engine.analyze(
                         fundamental_df=fundamental_df,
                         market_df=market_df,
+                        symbol=symbol,
                     )
                 )
 
