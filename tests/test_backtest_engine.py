@@ -166,10 +166,73 @@ def test_last_day_signal_is_pending():
     assert result["open_position"] is False
     assert result["pending_action"] == "BUY"
 
+def test_mark_to_market_max_drawdown():
+    """
+    Kiểm tra Maximum Drawdown trên daily mark-to-market equity.
+
+    BUY signal ngày 02/01
+    -> BUY tại OPEN ngày 03/01 = 100
+
+    CLOSE ngày 03/01 = 90
+    -> unrealized loss = -10%
+
+    SELL signal ngày 04/01
+    -> SELL tại OPEN ngày 05/01 = 100
+
+    MDD phải phản ánh mức giảm 100 -> 90,
+    tức khoảng -10%.
+    """
+
+    signals_df = pd.DataFrame(
+        [
+            {
+                "datetime": "2026-01-01",
+                "open": 100,
+                "close": 100,
+                "signal": "NO_SIGNAL",
+            },
+            {
+                "datetime": "2026-01-02",
+                "open": 100,
+                "close": 100,
+                "signal": "BUY",
+            },
+            {
+                "datetime": "2026-01-03",
+                "open": 100,
+                "close": 90,
+                "signal": "NO_SIGNAL",
+            },
+            {
+                "datetime": "2026-01-04",
+                "open": 90,
+                "close": 90,
+                "signal": "SELL",
+            },
+            {
+                "datetime": "2026-01-05",
+                "open": 100,
+                "close": 100,
+                "signal": "NO_SIGNAL",
+            },
+        ]
+    )
+
+    result = BacktestEngine().run(
+        signals_df
+    )
+
+    assert result["total_trades"] == 1
+
+    assert abs(
+        result["max_drawdown"] - (-10.0)
+    ) < 1e-9
+
 if __name__ == "__main__":
     test_buy_then_sell_next_day_open()
     test_sell_without_position_is_ignored()
     test_buy_while_holding_is_ignored()
     test_last_day_signal_is_pending()
+    test_mark_to_market_max_drawdown()
 
     print("ALL BACKTEST ENGINE TESTS PASSED")

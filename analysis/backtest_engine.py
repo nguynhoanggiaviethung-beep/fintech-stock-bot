@@ -23,6 +23,11 @@ class BacktestEngine:
     - Gross Loss
     - Profit Factor
     - Maximum Drawdown
+
+    Maximum Drawdown:
+    - Được tính trên daily mark-to-market equity.
+    - Khi đang HOLDING, equity được định giá theo CLOSE hiện tại.
+    - Khi không HOLDING, equity bằng capital đã thực hiện.
     """
 
     def __init__(
@@ -80,6 +85,11 @@ class BacktestEngine:
 
         trades = []
 
+        # Daily mark-to-market equity.
+        equity_curve = [
+            self.initial_capital
+        ]
+
         for _, row in df.iterrows():
 
             current_datetime = row[
@@ -88,6 +98,10 @@ class BacktestEngine:
 
             current_open = float(
                 row["open"]
+            )
+
+            current_close = float(
+                row["close"]
             )
 
             # ==================================
@@ -166,7 +180,39 @@ class BacktestEngine:
                 pending_action = None
 
             # ==================================
-            # 2. ĐỌC TÍN HIỆU CUỐI NGÀY
+            # 2. DAILY MARK-TO-MARKET EQUITY
+            # ==================================
+            #
+            # Nếu đang HOLDING:
+            #   equity = capital * close / entry_price
+            #
+            # Nếu không HOLDING:
+            #   equity = capital
+            #
+            # Việc định giá tại CLOSE phản ánh
+            # unrealized P/L trong từng phiên.
+
+            if (
+                position_held
+                and entry_price is not None
+            ):
+
+                current_equity = (
+                    capital
+                    * current_close
+                    / entry_price
+                )
+
+            else:
+
+                current_equity = capital
+
+            equity_curve.append(
+                current_equity
+            )
+
+            # ==================================
+            # 3. ĐỌC TÍN HIỆU CUỐI NGÀY
             # ==================================
 
             signal = row["signal"]
@@ -188,7 +234,7 @@ class BacktestEngine:
                     pending_action = "SELL"
 
         # ======================================
-        # 3. TỔNG HỢP TRADE
+        # 4. TỔNG HỢP TRADE
         # ======================================
 
         trades_df = pd.DataFrame(
@@ -222,7 +268,7 @@ class BacktestEngine:
             losing_trades = 0
 
         # ======================================
-        # 4. PERFORMANCE METRICS
+        # 5. PERFORMANCE METRICS
         # ======================================
 
         if total_trades > 0:
@@ -275,48 +321,6 @@ class BacktestEngine:
 
                 profit_factor = None
 
-            # ----------------------------------
-            # Maximum Drawdown
-            # ----------------------------------
-
-            equity_curve = [
-                self.initial_capital
-            ]
-
-            current_equity = (
-                self.initial_capital
-            )
-
-            for profit_loss in (
-                trades_df["profit_loss"]
-            ):
-
-                current_equity += (
-                    profit_loss
-                )
-
-                equity_curve.append(
-                    current_equity
-                )
-
-            equity_series = pd.Series(
-                equity_curve
-            )
-
-            running_peak = (
-                equity_series
-                .cummax()
-            )
-
-            drawdown = (
-                equity_series
-                - running_peak
-            ) / running_peak * 100
-
-            max_drawdown = (
-                drawdown.min()
-            )
-
         else:
 
             win_rate = 0.0
@@ -333,10 +337,34 @@ class BacktestEngine:
 
             profit_factor = None
 
-            max_drawdown = 0.0
+        # ======================================
+        # 6. MAXIMUM DRAWDOWN
+        # ======================================
+        #
+        # Tính trên daily mark-to-market equity,
+        # thay vì chỉ trên các trade đã đóng.
+
+        equity_series = pd.Series(
+            equity_curve,
+            dtype="float64",
+        )
+
+        running_peak = (
+            equity_series
+            .cummax()
+        )
+
+        drawdown = (
+            equity_series
+            - running_peak
+        ) / running_peak * 100
+
+        max_drawdown = (
+            float(drawdown.min())
+        )
 
         # ======================================
-        # 5. TOTAL RETURN
+        # 7. TOTAL RETURN
         # ======================================
 
         total_return_pct = (
