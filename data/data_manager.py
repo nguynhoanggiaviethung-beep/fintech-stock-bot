@@ -346,8 +346,9 @@ class MarketDataManager:
     """
     Quản lý dữ liệu thị trường mở rộng.
 
-    Hiện tại hỗ trợ:
-    - Lấy dữ liệu lịch sử VN-Index từ DNSE.
+    Hỗ trợ:
+    - Dữ liệu lịch sử cổ phiếu từ DNSE
+    - Dữ liệu lịch sử VN-Index từ DNSE
     """
 
     def __init__(self):
@@ -355,33 +356,74 @@ class MarketDataManager:
         self.vnstock_client = VnstockFundamentalClient()
         self.realtime_client = VnstockRealtimeClient()
 
-    def get_historical_index(
+    # ============================================================
+    # GENERIC MARKET DATA
+    # ============================================================
+
+    def get_market_data(
         self,
-        index_symbol: str = "VNINDEX",
+        symbol: str = "VNINDEX",
+        start_timestamp: int | None = None,
+        end_timestamp: int | None = None,
+        resolution: str = "1D",
         days: int = 30,
     ) -> pd.DataFrame:
         """
-        Lấy dữ liệu VN-Index trong số ngày gần nhất.
+        Lấy dữ liệu thị trường.
 
-        Parameters
-        ----------
-        index_symbol : str
-            Mã chỉ số, mặc định VNINDEX.
+        Nếu symbol là VNINDEX thì lấy dữ liệu Index từ DNSE.
+        Nếu symbol là mã cổ phiếu thì lấy dữ liệu Stock từ DNSE.
+        """
 
-        days : int
-            Số ngày lịch sử cần lấy.
+        symbol = symbol.upper().strip()
 
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame gồm:
-            timestamp
-            datetime
-            open
-            high
-            low
-            close
-            volume
+        if not symbol:
+            raise ValueError("symbol không được để trống")
+
+        # Nếu caller truyền timestamp thì dùng trực tiếp
+        if start_timestamp is not None and end_timestamp is not None:
+
+            if symbol == "VNINDEX":
+                response_text = self.dnse.get_historical_index(
+                    index_symbol=symbol,
+                    start_timestamp=start_timestamp,
+                    end_timestamp=end_timestamp,
+                    resolution=resolution,
+                )
+            else:
+                response_text = self.dnse.get_historical_ohlcv(
+                    symbol=symbol,
+                    start_timestamp=start_timestamp,
+                    end_timestamp=end_timestamp,
+                    resolution=resolution,
+                )
+
+            return DataManager._parse_dnse_ohlcv(
+                response_text
+            )
+
+        # Nếu không truyền timestamp thì lấy theo số ngày
+        return self.get_historical_index(
+            index_symbol=symbol,
+            days=days,
+        ) if symbol == "VNINDEX" else self._get_stock_history(
+            symbol=symbol,
+            days=days,
+            resolution=resolution,
+        )
+
+    # ============================================================
+    # STOCK HISTORY
+    # ============================================================
+
+    def _get_stock_history(
+        self,
+        symbol: str,
+        days: int = 30,
+        resolution: str = "1D",
+    ) -> pd.DataFrame:
+        """
+        Lấy dữ liệu lịch sử cổ phiếu từ DNSE.
         """
 
         if days <= 0:
@@ -400,13 +442,73 @@ class MarketDataManager:
             ).timestamp()
         )
 
+        response_text = self.dnse.get_historical_ohlcv(
+            symbol=symbol.upper(),
+            start_timestamp=start_timestamp,
+            end_timestamp=end_timestamp,
+            resolution=resolution,
+        )
+
+        df = DataManager._parse_dnse_ohlcv(
+            response_text
+        )
+
+        if not df.empty:
+            df.insert(
+                0,
+                "symbol",
+                symbol.upper(),
+            )
+
+        return df
+
+    # ============================================================
+    # VN-INDEX
+    # ============================================================
+
+    def get_historical_index(
+        self,
+        index_symbol: str = "VNINDEX",
+        days: int = 30,
+    ) -> pd.DataFrame:
+        """
+        Lấy dữ liệu VN-Index trong số ngày gần nhất.
+        """
+
+        if days <= 0:
+            raise ValueError("days phải lớn hơn 0")
+
+        index_symbol = index_symbol.upper().strip()
+
+        now_utc = pd.Timestamp.now(tz="UTC")
+
+        end_timestamp = int(
+            now_utc.timestamp()
+        )
+
+        start_timestamp = int(
+            (
+                now_utc
+                - pd.Timedelta(days=days)
+            ).timestamp()
+        )
+
         response_text = self.dnse.get_historical_index(
-            index_symbol=index_symbol.upper(),
+            index_symbol=index_symbol,
             start_timestamp=start_timestamp,
             end_timestamp=end_timestamp,
             resolution="1D",
         )
 
-        return DataManager._parse_dnse_ohlcv(
+        df = DataManager._parse_dnse_ohlcv(
             response_text
         )
+
+        if not df.empty:
+            df.insert(
+                0,
+                "symbol",
+                index_symbol,
+            )
+
+        return df

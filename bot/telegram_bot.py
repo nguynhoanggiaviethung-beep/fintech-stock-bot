@@ -3411,8 +3411,9 @@ async def market(
 
         market_df = await asyncio.to_thread(
             market_manager.get_market_data,
-            start_timestamp,
-            end_timestamp,
+            symbol="VNINDEX",
+            start_timestamp=start_timestamp,
+            end_timestamp=end_timestamp,
         )
 
         if market_df.empty:
