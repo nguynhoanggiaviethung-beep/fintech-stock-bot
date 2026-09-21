@@ -22,7 +22,55 @@ class DNSEDataClient:
             api_key=self.api_key,
             api_secret=self.api_secret,
         )
+        
+    def get_stock_symbols(self):
+        all_instruments = []
+        limit = 1000
+        offset = 0
 
+        while True:
+            result = self.client._request(
+                "GET",
+                "/market/instruments",
+                query={
+                    "securityGroupId": "ST",
+                    "limit": limit,
+                    "offset": offset,
+                },
+            )
+
+            status_code, response_text = result
+
+            if status_code != 200:
+                raise RuntimeError(
+                    f"DNSE API error when getting stock instruments: "
+                    f"{status_code} - {response_text}"
+                )
+
+            import json
+
+            data = json.loads(response_text)
+            instruments = data.get("data", [])
+
+            if not instruments:
+                break
+
+            all_instruments.extend(instruments)
+
+            if len(instruments) < limit:
+                break
+
+            offset += limit
+
+        symbols = [
+            item["symbol"]
+            for item in all_instruments
+            if item.get("symbol")
+            and item.get("securityGroupId") == "ST"
+        ]
+
+        return symbols
+    
     def get_historical_ohlcv(
         self,
         symbol,

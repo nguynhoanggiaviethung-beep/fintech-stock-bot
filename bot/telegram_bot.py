@@ -3,6 +3,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import result
 
 from dotenv import load_dotenv
 from telegram import Update
@@ -121,6 +122,7 @@ def _format_pct(value):
         return "N/A"
 
 
+
 def _format_price(value):
     """
     Format giá cổ phiếu.
@@ -138,7 +140,25 @@ def _format_price(value):
     ):
         return "N/A"
 
+def _format_signal(signal):
+    """Chuyển tín hiệu nội bộ sang nội dung hiển thị trên Telegram."""
+    
+    signal_map = {
+        "BUY": "🟢 MUA",
+        "SELL": "🔴 BÁN",
+        "NO_SIGNAL": "⚪ KHÔNG CÓ TÍN HIỆU",
+    }
 
+    return signal_map.get(
+        signal,
+        "⚪ KHÔNG CÓ TÍN HIỆU",
+    )
+
+
+def _format_condition(condition):
+    """Chuyển trạng thái điều kiện sang tiếng Việt."""
+    
+    return "ĐẠT" if condition else "KHÔNG ĐẠT"
 # ============================================================
 # SUBSCRIPTION STORAGE
 # ============================================================
@@ -348,7 +368,7 @@ async def _check_subscriptions(
     Kiểm tra các mã đã đăng ký.
 
     Chỉ gửi cảnh báo khi tín hiệu thay đổi
-    sang BUY hoặc SELL.
+    sang MUA hoặc BÁN.
     """
 
     for chat_id, symbols in list(
@@ -368,7 +388,7 @@ async def _check_subscriptions(
 
                 current_signal = (
                     result.get("signal")
-                    or "NO SIGNAL"
+                    or "NO_SIGNAL"
                 )
 
                 chat_signals = (
@@ -434,29 +454,25 @@ async def _check_subscriptions(
 
                     continue
 
-                if current_signal == "BUY":
-
-                    signal_text = "🟢 BUY"
-
-                else:
-
-                    signal_text = "🔴 SELL"
+                signal_text = _format_signal(
+                    current_signal
+                )
 
                 message = (
                     "🚨 CẢNH BÁO TÍN HIỆU\n\n"
                     f"📌 Mã: {symbol}\n"
-                    f"🎯 Signal: {signal_text}\n\n"
-                    f"• Revenue Growth: "
+                    f"🎯 Tín hiệu: {signal_text}\n\n"
+                    f"• Tăng trưởng doanh thu: "
                     f"{_format_pct(result.get('revenue_growth'))}\n"
-                    f"• Net Income Growth: "
+                    f"• Tăng trưởng lợi nhuận: "
                     f"{_format_pct(result.get('net_income_growth'))}\n"
                     f"• ROE: "
                     f"{_format_pct(result.get('roe'))}\n"
-                    f"• Close: "
+                    f"• Giá đóng cửa: "
                     f"{_format_price(result.get('close'))}\n"
                     f"• MA20: "
                     f"{_format_price(result.get('price_ma20'))}\n"
-                    f"• Volume Ratio: "
+                    f"• Tỷ lệ khối lượng: "
                     f"{_format_number(result.get('volume_ratio'))}x"
                 )
 
@@ -600,11 +616,20 @@ def build_stock_analysis(
         )
     )
 
-    realtime_trade = (
-        data_manager.get_realtime_trade(
+    try:
+        realtime_trade = data_manager.get_realtime_trade(
             symbol=symbol
         )
-    )
+        realtime_error = None
+
+    except Exception as error:
+        realtime_trade = {
+            "price": None,
+            "volume": None,
+            "time": None,
+            "match_type": None,
+        }
+        realtime_error = str(error)
 
     # --------------------------------------------------------
     # VALIDATE DATA
@@ -663,28 +688,14 @@ def build_stock_analysis(
     latest_market = (
         market_df.iloc[-1]
     )
-
     # --------------------------------------------------------
     # REALTIME
     # --------------------------------------------------------
 
-    realtime_price = (
-        realtime_trade.get("price")
-    )
-
-    realtime_volume = (
-        realtime_trade.get("volume")
-    )
-
-    realtime_time = (
-        realtime_trade.get("time")
-    )
-
-    realtime_match_type = (
-        realtime_trade.get(
-            "match_type"
-        )
-    )
+    realtime_price = realtime_trade.get("price")
+    realtime_volume = realtime_trade.get("volume")
+    realtime_time = realtime_trade.get("time")
+    realtime_match_type = realtime_trade.get("match_type")
 
     # --------------------------------------------------------
     # RETURN STRUCTURED RESULT
@@ -707,8 +718,9 @@ def build_stock_analysis(
         "realtime_volume": realtime_volume,
         "realtime_time": realtime_time,
         "realtime_match_type": (
-            realtime_match_type
+        realtime_match_type
         ),
+        "realtime_error": realtime_error,
 
         # Fundamental
         "report_period": (
@@ -880,7 +892,7 @@ async def signals(
         )
 
         # ----------------------------------------------------
-        # KHÔNG CÓ TÍN HIỆU BUY
+        # KHÔNG CÓ TÍN HIỆU MUA
         # ----------------------------------------------------
 
         if not buy_signals:
@@ -890,7 +902,7 @@ async def signals(
                 "Không tìm thấy mã nào thỏa mãn "
                 "Strategy 2 trong phạm vi quét hiện tại.\n\n"
                 f"• Đã quét: {stats['total']} mã\n"
-                f"• BUY: {stats['buy_signals']} mã\n"
+                f"• MUA: {stats['buy_signals']} mã\n"
                 f"• Fundamental PASS: "
                 f"{stats['fundamental_pass']} mã\n"
                 f"• Volume Breakout PASS: "
@@ -900,14 +912,14 @@ async def signals(
             return
 
         # ----------------------------------------------------
-        # CÓ TÍN HIỆU BUY
+        # CÓ TÍN HIỆU MUA
         # ----------------------------------------------------
 
         lines = [
-            "📈 TÍN HIỆU BUY HÔM NAY",
+            "📈 TÍN HIỆU MUA HÔM NAY",
             "",
             f"Đã quét: {stats['total']} mã",
-            f"Tìm thấy: {len(buy_signals)} mã BUY",
+            f"Tìm thấy: {len(buy_signals)} mã MUA",
             "",
         ]
 
@@ -919,15 +931,15 @@ async def signals(
 
             lines.append(
                 f"🟢 {symbol}\n"
-                f"   • Revenue Growth: "
+                f"   • Tăng trưởng doanh thu: "
                 f"{_format_pct(item['revenue_growth'])}\n"
-                f"   • Net Income Growth: "
+                f"   • Tăng trưởng lợi nhuận: "
                 f"{_format_pct(item['net_income_growth'])}\n"
                 f"   • ROE: "
                 f"{_format_pct(item['roe'])}\n"
-                f"   • Volume Ratio: "
+                f"   • Tỷ lệ khối lượng: "
                 f"{_format_number(item['volume_ratio'])}x\n"
-                f"   • Close: "
+                f"   • Giá đóng cửa: "
                 f"{_format_price(item['close'])}\n"
                 f"   • MA20: "
                 f"{_format_price(item['price_ma20'])}\n"
@@ -989,54 +1001,45 @@ async def signal(
             symbol,
         )
 
-        signal_value = (
-            result["signal"]
-        )
+        signal_value = result["signal"]
 
-        if signal_value == "BUY":
-
-            signal_text = "🟢 BUY"
-
-        elif signal_value == "SELL":
-
-            signal_text = "🔴 SELL"
-
-        else:
-
-            signal_text = "⚪ NO SIGNAL"
+        signal_text = _format_signal(
+                signal_value
+            )
 
         message = (
-            f"📊 {symbol}\n\n"
+            f"📊 {symbol} — TÍN HIỆU CỔ PHIẾU\n\n"
 
-            f"Signal: {signal_text}\n\n"
+            f"🎯 TÍN HIỆU\n"
+            f"• {signal_text}\n\n"
 
-            f"📌 FUNDAMENTAL\n"
-            f"• Revenue Growth: "
+            f"🏦 PHÂN TÍCH CƠ BẢN\n"
+            f"• Tăng trưởng doanh thu: "
             f"{_format_pct(result['revenue_growth'])}\n"
-            f"• Net Income Growth: "
+            f"• Tăng trưởng lợi nhuận: "
             f"{_format_pct(result['net_income_growth'])}\n"
             f"• ROE: "
             f"{_format_pct(result['roe'])}\n\n"
 
-            f"📈 TECHNICAL\n"
-            f"• Close: "
+            f"📈 PHÂN TÍCH KỸ THUẬT\n"
+            f"• Giá đóng cửa: "
             f"{_format_price(result['close'])}\n"
             f"• MA20: "
             f"{_format_price(result['price_ma20'])}\n"
-            f"• Volume: "
+            f"• Khối lượng: "
             f"{_format_number(result['volume'])}\n"
-            f"• Volume MA20: "
+            f"• Khối lượng MA20: "
             f"{_format_number(result['volume_ma20'])}\n"
-            f"• Volume Ratio: "
+            f"• Tỷ lệ khối lượng: "
             f"{_format_number(result['volume_ratio'])}x\n\n"
 
-            f"🔎 CONDITIONS\n"
-            f"• Fundamental: "
-            f"{'PASS' if result['fundamental_pass'] else 'FAIL'}\n"
-            f"• Volume Breakout: "
-            f"{'PASS' if result['volume_breakout'] else 'FAIL'}\n"
-            f"• Price Momentum: "
-            f"{'PASS' if result['price_momentum'] else 'FAIL'}"
+            f"🔎 ĐIỀU KIỆN CHIẾN LƯỢC\n"
+            f"• Cơ bản: "
+            f"{_format_condition(result['fundamental_pass'])}\n"
+            f"• Bứt phá khối lượng: "
+            f"{_format_condition(result['volume_breakout'])}\n"
+            f"• Động lượng giá: "
+            f"{_format_condition(result['price_momentum'])}"
         )
 
         await update.message.reply_text(
@@ -1097,35 +1100,19 @@ async def analyze(
             symbol,
         )
 
-        signal_value = (
-            result["signal"]
+        signal_value = result["signal"]
+
+        signal_text = _format_signal(
+            signal_value
         )
 
-        if signal_value == "BUY":
+        realtime_price = result["realtime_price"]
 
-            signal_text = "🟢 BUY"
+        realtime_volume = result["realtime_volume"]
 
-        elif signal_value == "SELL":
+        realtime_time = result["realtime_time"]
 
-            signal_text = "🔴 SELL"
-
-        else:
-
-            signal_text = "⚪ NO SIGNAL"
-
-        realtime_price = (
-            result["realtime_price"]
-        )
-
-        if realtime_price is None:
-
-            realtime_price = (
-                result["market_close"]
-            )
-
-        realtime_volume = (
-            result["realtime_volume"]
-        )
+        match_type = result["realtime_match_type"]
 
         realtime_time = (
             result["realtime_time"]
@@ -1136,62 +1123,64 @@ async def analyze(
         )
 
         message = (
-            f"📊 {symbol} — STOCK ANALYSIS\n\n"
+            f"📊 {symbol} — PHÂN TÍCH CỔ PHIẾU\n\n"
 
-            f"💰 MARKET\n"
-            f"• Current Price: "
-            f"{_format_price(realtime_price)}\n"
-            f"• Daily Close: "
+            f"💰 THỊ TRƯỜNG\n"
+            f"• Giá hiện tại: "
+            f"{_format_price(realtime_price) if realtime_price is not None else 'Chưa có dữ liệu realtime'}\n"
+            f"• Giá đóng cửa gần nhất: "
             f"{_format_price(result['market_close'])}\n"
-            f"• Daily Volume: "
+            f"• Khối lượng phiên gần nhất: "
             f"{_format_number(result['market_volume'])}\n\n"
 
-            f"⚡ REAL-TIME\n"
-            f"• Last Price: "
-            f"{_format_price(result['realtime_price'])}\n"
-            f"• Match Volume: "
-            f"{_format_number(realtime_volume)}\n"
-            f"• Match Type: "
-            f"{match_type or 'N/A'}\n"
-            f"• Time: "
-            f"{realtime_time or 'N/A'}\n\n"
+            f"⚡ KHỚP LỆNH GẦN NHẤT\n"
+            f"• Giá: "
+            f"{_format_price(realtime_price) if realtime_price is not None else 'Chưa có dữ liệu'}\n"
+            f"• Khối lượng: "
+            f"{_format_number(realtime_volume) if realtime_volume is not None else 'Chưa có dữ liệu'}\n"
+            f"• Loại khớp: "
+            f"{match_type or 'Chưa có dữ liệu'}\n"
+            f"• Thời gian: "
+            f"{realtime_time or 'Chưa có dữ liệu'}\n"
+            f"• Trạng thái: "
+            f"{'Đang có dữ liệu realtime' if realtime_price is not None else 'Dữ liệu realtime hiện chưa khả dụng'}\n\n"
 
-            f"🏦 FUNDAMENTAL\n"
-            f"• Report Period: "
+            f"🏦 PHÂN TÍCH CƠ BẢN\n"
+            f"• Kỳ báo cáo: "
             f"{result['report_period'] or 'N/A'}\n"
-            f"• Revenue: "
+            f"• Doanh thu: "
             f"{_format_number(result['revenue'])}\n"
-            f"• Revenue Growth: "
+            f"• Tăng trưởng doanh thu: "
             f"{_format_pct(result['revenue_growth'])}\n"
-            f"• Net Income: "
+            f"• Lợi nhuận ròng: "
             f"{_format_number(result['net_income'])}\n"
-            f"• Net Income Growth: "
+            f"• Tăng trưởng lợi nhuận: "
             f"{_format_pct(result['net_income_growth'])}\n"
             f"• EPS: "
             f"{_format_number(result['eps'])}\n"
             f"• ROE: "
             f"{_format_pct(result['roe'])}\n"
-            f"• Debt/Equity: "
+            f"• D/E: "
             f"{_format_number(result['debt_equity'])}\n\n"
 
-            f"📐 VALUATION\n"
+            f"📐 ĐỊNH GIÁ\n"
             f"• BVPS: "
             f"{_format_number(result['bvps'])}\n"
             f"• P/E: "
             f"{_format_number(result['pe'])}\n"
             f"• P/B: "
             f"{_format_number(result['pb'])}\n"
-            f"• Market Cap: "
+            f"• Vốn hóa: "
             f"{_format_number(result['market_cap'])}\n\n"
 
-            f"🎯 SIGNAL\n"
+            f"🎯 TÍN HIỆU\n"
             f"• {signal_text}\n"
-            f"• Fundamental: "
-            f"{'PASS' if result['fundamental_pass'] else 'FAIL'}\n"
-            f"• Volume Breakout: "
-            f"{'PASS' if result['volume_breakout'] else 'FAIL'}\n"
-            f"• Price Momentum: "
-            f"{'PASS' if result['price_momentum'] else 'FAIL'}"
+            f"• Điều kiện cơ bản: "
+            f"{_format_condition(result['fundamental_pass'])}\n"
+            f"• Bứt phá khối lượng: "
+            f"{_format_condition(result['volume_breakout'])}\n"
+            f"• Động lượng giá: "
+            f"{_format_condition(result['price_momentum'])}"
         )
 
         await update.message.reply_text(
@@ -1290,7 +1279,7 @@ async def subscribe(
 
         current_signal = (
             result.get("signal")
-            or "NO SIGNAL"
+            or "NO_SIGNAL"
         )
 
         symbols.append(
@@ -1315,11 +1304,11 @@ async def subscribe(
             "🔔 ĐĂNG KÝ CẢNH BÁO THÀNH CÔNG\n\n"
             f"• Mã: {symbol}\n"
             f"• Tín hiệu hiện tại: "
-            f"{current_signal}\n"
+            f"{_format_signal(current_signal)}\n"
             f"• Kiểm tra định kỳ: "
             f"{ALERT_INTERVAL_SECONDS // 60} phút\n\n"
             "Bot sẽ gửi thông báo khi tín hiệu "
-            "chuyển sang BUY hoặc SELL."
+            "chuyển sang MUA hoặc BÁN."
         )
 
     except Exception as error:
@@ -1682,49 +1671,49 @@ async def backtest(
         message = (
             f"📊 BACKTEST — {symbol}\n\n"
 
-            f"📅 PERIOD\n"
-            f"• From: "
+            f"📅 THỜI GIAN\n"
+            f"• Từ: "
             f"{market_df['datetime'].iloc[0]}\n"
-            f"• To: "
+            f"• Đến: "
             f"{market_df['datetime'].iloc[-1]}\n"
-            f"• Trading sessions: "
+            f"• Số phiên giao dịch: "
             f"{len(market_df)}\n\n"
 
-            f"💰 PERFORMANCE\n"
-            f"• Initial Capital: "
+            f"💰 HIỆU SUẤT\n"
+            f"• Vốn ban đầu: "
             f"{_format_number(initial_capital, 0)}\n"
-            f"• Final Capital: "
+            f"• Vốn cuối kỳ: "
             f"{_format_number(final_capital, 0)}\n"
-            f"• Total Return: "
+            f"• Tổng lợi nhuận: "
             f"{_format_pct(total_return)}\n"
-            f"• Max Drawdown: "
+            f"• Mức sụt giảm tối đa: "
             f"{_format_pct(max_drawdown)}\n\n"
 
-            f"📈 TRADES\n"
-            f"• Total Trades: "
+            f"📈 GIAO DỊCH\n"
+            f"• Tổng số giao dịch: "
             f"{total_trades}\n"
-            f"• Winning Trades: "
+            f"• Giao dịch có lãi: "
             f"{winning_trades}\n"
-            f"• Losing Trades: "
+            f"• Giao dịch thua lỗ: "
             f"{losing_trades}\n"
-            f"• Win Rate: "
+            f"• Tỷ lệ thắng: "
             f"{_format_pct(win_rate)}\n"
-            f"• Average Trade: "
+            f"• Lợi nhuận giao dịch trung bình: "
             f"{_format_pct(average_trade_return)}\n"
-            f"• Best Trade: "
+            f"• Giao dịch tốt nhất: "
             f"{_format_pct(best_trade)}\n"
-            f"• Worst Trade: "
+            f"• Giao dịch tệ nhất: "
             f"{_format_pct(worst_trade)}\n"
-            f"• Profit Factor: "
+            f"• Hệ số lợi nhuận: "
             f"{_format_number(profit_factor)}\n\n"
 
-            f"🎯 STRATEGY 2\n"
-            f"• Revenue Growth > 15%\n"
-            f"• Net Income Growth > 15%\n"
+            f"🎯 CHIẾN LƯỢC 2\n"
+            f"• Tăng trưởng doanh thu > 15%\n"
+            f"• Tăng trưởng lợi nhuận sau thuế > 15%\n"
             f"• ROE > 15%\n"
-            f"• Volume Breakout ≥ 1.5× MA20\n"
-            f"• Close > MA20\n"
-            f"• Entry: next-day Open"
+            f"• Khối lượng đột biến ≥ 1.5× MA20\n"
+            f"• Giá đóng cửa > MA20\n"
+            f"• Điểm vào lệnh: Giá mở cửa phiên kế tiếp"
         )
 
         await update.message.reply_text(
