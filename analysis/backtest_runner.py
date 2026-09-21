@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from analysis.benchmark import BenchmarkAnalyzer
+from data.data_manager import MarketDataManager
 from analysis.backtest_engine import BacktestEngine
 from analysis.signal_engine import SignalEngine
 from analysis.trade_explanation import TradeExplanation
@@ -46,6 +48,8 @@ class BacktestRunner:
         signal_engine: SignalEngine | None = None,
         backtest_engine: BacktestEngine | None = None,
         trade_explanation: TradeExplanation | None = None,
+        benchmark_analyzer: BenchmarkAnalyzer | None = None,
+        market_data_manager: MarketDataManager | None = None,
     ):
         self.signal_engine = (
             signal_engine
@@ -63,6 +67,18 @@ class BacktestRunner:
             trade_explanation
             if trade_explanation is not None
             else TradeExplanation()
+        )
+
+        self.benchmark_analyzer = (
+            benchmark_analyzer
+            if benchmark_analyzer is not None
+            else BenchmarkAnalyzer()
+        )
+
+        self.market_data_manager = (
+            market_data_manager
+            if market_data_manager is not None
+            else MarketDataManager()
         )
 
     def generate_signals(
@@ -314,7 +330,6 @@ class BacktestRunner:
             results.append(result)
 
         return pd.DataFrame(results)
-
     def run(
         self,
         market_df: pd.DataFrame,
@@ -322,8 +337,12 @@ class BacktestRunner:
         symbol: str = "UNKNOWN",
     ) -> dict:
         """
-        Run complete backtest.
+        Chạy backtest Strategy 2 và so sánh với VN-Index.
         """
+
+        # =========================================================
+        # 1. GENERATE STRATEGY SIGNALS
+        # =========================================================
 
         signals_df = self.generate_signals(
             market_df=market_df,
@@ -331,37 +350,168 @@ class BacktestRunner:
             symbol=symbol,
         )
 
+        # =========================================================
+        # 2. RUN STRATEGY BACKTEST
+        # =========================================================
+
         if signals_df.empty:
-            return {
-                "signals": signals_df,
-                "backtest": self.backtest_engine.run(
+            backtest_input = pd.DataFrame(
+                columns=[
+                    "datetime",
+                    "open",
+                    "close",
+                    "signal",
+                ]
+            )
+        else:
+            backtest_input = signals_df[
+                [
+                    "datetime",
+                    "open",
+                    "close",
+                    "signal",
+                ]
+            ].copy()
+
+        backtest_result = self.backtest_engine.run(
+            backtest_input
+        )
+
+        # =========================================================
+        # 3. PREPARE VN-INDEX BENCHMARK PERIOD
+        # =========================================================
+
+        market_datetime = pd.to_datetime(
+            market_df["datetime"],
+            utc=True,
+        )
+
+        start_datetime = market_datetime.min()
+        end_datetime = market_datetime.max()
+
+        if pd.isna(start_datetime) or pd.isna(end_datetime):
+            benchmark_result = (
+                self.benchmark_analyzer.run(
                     pd.DataFrame(
                         columns=[
                             "datetime",
-                            "open",
                             "close",
-                            "signal",
                         ]
                     )
-                ),
+                )
+            )
+
+            benchmark_result["strategy_return_pct"] = float(
+                backtest_result.get(
+                    "total_return_pct",
+                    0.0,
+                )
+            )
+
+            benchmark_result["excess_return_pct"] = (
+                benchmark_result["strategy_return_pct"]
+                - benchmark_result["return_pct"]
+            )
+
+            return {
+                "signals": signals_df,
+                "backtest": backtest_result,
+                "benchmark": benchmark_result,
             }
 
-        backtest_input = signals_df[
-            [
-                "datetime",
-                "open",
-                "close",
-                "signal",
-            ]
-        ].copy()
+        days = max(
+            1,
+            int(
+                (
+                    end_datetime
+                    - start_datetime
+                ).total_seconds()
+                / 86400
+            )
+            + 1,
+        )
 
-        backtest_result = (
-            self.backtest_engine.run(
-                backtest_input
+        # =========================================================
+        # 4. GET VN-INDEX DATA
+        # =========================================================
+
+        benchmark_df = (
+            self.market_data_manager
+            .get_historical_index(
+                index_symbol="VNINDEX",
+                days=days,
             )
         )
+
+        # Quan trọng:
+        # ép datetime của VN-Index về UTC giống market_df.
+        benchmark_df["datetime"] = pd.to_datetime(
+            benchmark_df["datetime"],
+            utc=True,
+        )
+
+        # =========================================================
+        # 5. FILTER VN-INDEX TO SAME PERIOD
+        # =========================================================
+
+        benchmark_df = benchmark_df[
+            (
+                benchmark_df["datetime"]
+                >= start_datetime
+            )
+            & (
+                benchmark_df["datetime"]
+                <= end_datetime
+            )
+        ].copy()
+
+        # =========================================================
+        # 6. CALCULATE BENCHMARK PERFORMANCE
+        # =========================================================
+
+        benchmark_result = (
+            self.benchmark_analyzer.run(
+                benchmark_df
+            )
+        )
+
+        # =========================================================
+        # 7. COMPARE STRATEGY VS VN-INDEX
+        # =========================================================
+
+        strategy_return = float(
+            backtest_result.get(
+                "total_return_pct",
+                0.0,
+            )
+        )
+
+        benchmark_return = float(
+            benchmark_result.get(
+                "return_pct",
+                0.0,
+            )
+        )
+
+        excess_return = (
+            strategy_return
+            - benchmark_return
+        )
+
+        benchmark_result["strategy_return_pct"] = (
+            strategy_return
+        )
+
+        benchmark_result["excess_return_pct"] = (
+            excess_return
+        )
+
+        # =========================================================
+        # 8. FINAL RESULT
+        # =========================================================
 
         return {
             "signals": signals_df,
             "backtest": backtest_result,
+            "benchmark": benchmark_result,
         }
