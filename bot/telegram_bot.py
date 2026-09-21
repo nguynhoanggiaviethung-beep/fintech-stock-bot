@@ -3,7 +3,6 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest import result
 
 from dotenv import load_dotenv
 from telegram import Update
@@ -56,7 +55,136 @@ subscription_state = {
 
 alert_task = None
 
+# ============================================================
+# WATCHLIST / PORTFOLIO STORAGE
+# ============================================================
 
+WATCHLIST_FILE = Path(
+    "data/watchlist.json"
+)
+
+PORTFOLIO_FILE = Path(
+    "data/portfolio.json"
+)
+
+watchlist_state = {
+    "symbols": []
+}
+
+portfolio_state = {
+    "positions": {}
+}
+
+
+def _load_watchlist():
+    global watchlist_state
+
+    if not WATCHLIST_FILE.exists():
+        watchlist_state = {
+            "symbols": []
+        }
+        return
+
+    try:
+        with open(
+            WATCHLIST_FILE,
+            "r",
+            encoding="utf-8",
+        ) as file:
+            data = json.load(file)
+
+        symbols = data.get("symbols", [])
+
+        watchlist_state = {
+            "symbols": sorted(
+                set(
+                    str(symbol).upper().strip()
+                    for symbol in symbols
+                    if str(symbol).strip()
+                )
+            )
+        }
+
+    except (
+        json.JSONDecodeError,
+        OSError,
+        TypeError,
+    ):
+        watchlist_state = {
+            "symbols": []
+        }
+
+
+def _save_watchlist():
+    WATCHLIST_FILE.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    with open(
+        WATCHLIST_FILE,
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(
+            watchlist_state,
+            file,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+
+def _load_portfolio():
+    global portfolio_state
+
+    if not PORTFOLIO_FILE.exists():
+        portfolio_state = {
+            "positions": {}
+        }
+        return
+
+    try:
+        with open(
+            PORTFOLIO_FILE,
+            "r",
+            encoding="utf-8",
+        ) as file:
+            data = json.load(file)
+
+        portfolio_state = {
+            "positions": data.get(
+                "positions",
+                {},
+            )
+        }
+
+    except (
+        json.JSONDecodeError,
+        OSError,
+        TypeError,
+    ):
+        portfolio_state = {
+            "positions": {}
+        }
+
+
+def _save_portfolio():
+    PORTFOLIO_FILE.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    with open(
+        PORTFOLIO_FILE,
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(
+            portfolio_state,
+            file,
+            ensure_ascii=False,
+            indent=2,
+        )
 # ============================================================
 # HELPERS
 # ============================================================
@@ -488,6 +616,123 @@ async def _check_subscriptions(
                     f"{symbol}: {error}"
                 )
 
+async def _check_watchlist_alerts(
+    application,
+):
+    """
+    Kiểm tra tín hiệu của các mã trong watchlist.
+
+    Watchlist dùng chung cơ chế last_signals
+    của subscription theo từng chat.
+    """
+
+    if not watchlist_state["symbols"]:
+        return
+
+    for chat_id in list(
+        subscription_state["subscriptions"].keys()
+    ):
+
+        chat_key = str(chat_id)
+
+        subscribed_symbols = set(
+            _get_chat_subscriptions(
+                chat_id
+            )
+        )
+
+        # Chỉ alert watchlist cho chat đã
+        # đăng ký ít nhất một mã.
+        if not subscribed_symbols:
+            continue
+
+        for symbol in watchlist_state["symbols"]:
+
+            try:
+                result = await asyncio.to_thread(
+                    _build_signal_snapshot,
+                    symbol,
+                )
+
+                current_signal = (
+                    result.get("signal")
+                    or "NO_SIGNAL"
+                )
+
+                chat_signals = (
+                    subscription_state[
+                        "last_signals"
+                    ].setdefault(
+                        chat_key,
+                        {},
+                    )
+                )
+
+                watch_key = (
+                    f"WATCH_{symbol}"
+                )
+
+                previous_signal = (
+                    chat_signals.get(
+                        watch_key
+                    )
+                )
+
+                if previous_signal is None:
+                    chat_signals[
+                        watch_key
+                    ] = current_signal
+
+                    _save_subscription_state()
+
+                    continue
+
+                if (
+                    previous_signal
+                    == current_signal
+                ):
+                    continue
+
+                chat_signals[
+                    watch_key
+                ] = current_signal
+
+                _save_subscription_state()
+
+                if current_signal not in {
+                    "BUY",
+                    "SELL",
+                }:
+                    continue
+
+                message = (
+                    "⭐ SMART WATCHLIST ALERT\n\n"
+                    f"📌 Mã: {symbol}\n"
+                    f"🎯 Tín hiệu: "
+                    f"{_format_signal(current_signal)}\n\n"
+                    f"📈 Tăng trưởng DT: "
+                    f"{_format_pct(result.get('revenue_growth'))}\n"
+                    f"📈 Tăng trưởng LN: "
+                    f"{_format_pct(result.get('net_income_growth'))}\n"
+                    f"🏦 ROE: "
+                    f"{_format_pct(result.get('roe'))}\n"
+                    f"📊 Volume Ratio: "
+                    f"{_format_number(result.get('volume_ratio'))}x\n"
+                    f"📐 Giá / MA20: "
+                    f"{_format_price(result.get('close'))} / "
+                    f"{_format_price(result.get('price_ma20'))}"
+                )
+
+                await application.bot.send_message(
+                    chat_id=int(chat_id),
+                    text=message,
+                )
+
+            except Exception as error:
+                print(
+                    f"[WATCHLIST ALERT ERROR] "
+                    f"{symbol}: {error}"
+                )
 
 async def _alert_loop(
     application,
@@ -501,6 +746,10 @@ async def _alert_loop(
         try:
 
             await _check_subscriptions(
+                application
+            )
+
+            await _check_watchlist_alerts(
                 application
             )
 
@@ -519,14 +768,11 @@ async def _alert_loop(
 async def _post_init(
     application,
 ):
-    """
-    Khởi tạo subscription và alert loop
-    khi Telegram bot bắt đầu chạy.
-    """
-
     global alert_task
 
     _load_subscription_state()
+    _load_watchlist()
+    _load_portfolio()
 
     alert_task = asyncio.create_task(
         _alert_loop(application)
@@ -535,7 +781,14 @@ async def _post_init(
     print(
         "Alert monitor started."
     )
-
+    print(
+        f"Watchlist loaded: "
+        f"{len(watchlist_state['symbols'])} symbols"
+    )
+    print(
+        f"Portfolio loaded: "
+        f"{len(portfolio_state['positions'])} positions"
+    )
 
 async def _post_shutdown(
     application,
@@ -560,6 +813,747 @@ async def _post_shutdown(
 
         alert_task = None
 
+# ============================================================
+# PORTFOLIO HELPERS
+# ============================================================
+
+def _normalize_stock_price(price):
+    """
+    VNStock trả giá cổ phiếu Việt Nam theo đơn vị nghìn đồng.
+    Ví dụ:
+        27.7  -> 27,700 VND
+        120.5 -> 120,500 VND
+
+    Nếu giá đã ở dạng VND thì giữ nguyên.
+    """
+    if price is None:
+        return None
+
+    price = float(price)
+
+    if 0 < price < 1000:
+        return price * 1000
+
+    return price
+
+
+def _get_position_price(
+    symbol,
+    position,
+):
+    """
+    Lấy giá hiện tại, ưu tiên realtime.
+    Chuẩn hóa đơn vị về VND.
+    """
+
+    try:
+        realtime = data_manager.get_realtime_trade(
+            symbol
+        )
+
+        realtime_price = realtime.get(
+            "price"
+        )
+
+        if realtime_price is not None:
+            return _normalize_stock_price(
+                realtime_price
+            )
+
+    except Exception:
+        pass
+
+    current_price = position.get(
+        "current_price"
+    )
+
+    if current_price is not None:
+        return float(current_price)
+
+    return None
+
+# ============================================================
+# /portfolio
+# ============================================================
+
+async def portfolio(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    positions = portfolio_state.get(
+        "positions",
+        {},
+    )
+
+    if not positions:
+        await update.message.reply_text(
+            "💼 PORTFOLIO\n\n"
+            "Danh mục đang trống.\n\n"
+            "Thêm vị thế bằng:\n"
+            "/add FPT 1000 120000"
+        )
+        return
+
+    total_value = 0
+    total_cost = 0
+
+    rows = []
+
+    for symbol, position in positions.items():
+
+        quantity = float(
+            position.get(
+                "quantity",
+                0,
+            )
+        )
+
+        avg_price = float(
+            position.get(
+                "avg_price",
+                0,
+            )
+        )
+
+        current_price = await asyncio.to_thread(
+            _get_position_price,
+            symbol,
+            position,
+        )
+
+        if current_price is None:
+            current_price = avg_price
+
+        cost = quantity * avg_price
+        value = quantity * current_price
+        pnl = value - cost
+
+        total_cost += cost
+        total_value += value
+
+        if cost != 0:
+            pnl_pct = (
+                pnl / cost * 100
+            )
+        else:
+            pnl_pct = 0
+
+        pnl_icon = (
+            "🟢"
+            if pnl >= 0
+            else "🔴"
+        )
+
+        rows.append(
+            f"{pnl_icon} {symbol}\n"
+            f"   SL: {_format_number(quantity, 0)}\n"
+            f"   Giá vốn: {_format_price(avg_price)}\n"
+            f"   Giá hiện tại: {_format_price(current_price)}\n"
+            f"   Giá trị: {_format_number(value, 0)}\n"
+            f"   P/L: {_format_number(pnl, 0)} "
+            f"({_format_pct(pnl_pct)})"
+        )
+
+    total_pnl = (
+        total_value - total_cost
+    )
+
+    if total_cost != 0:
+        total_pnl_pct = (
+            total_pnl
+            / total_cost
+            * 100
+        )
+    else:
+        total_pnl_pct = 0
+
+    message = (
+        "💼 PORTFOLIO\n\n"
+        + "\n\n".join(rows)
+        + "\n\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"💰 Tổng giá trị: "
+        f"{_format_number(total_value, 0)}\n"
+        f"💵 Tổng vốn: "
+        f"{_format_number(total_cost, 0)}\n"
+        f"📈 Tổng P/L: "
+        f"{_format_number(total_pnl, 0)} "
+        f"({_format_pct(total_pnl_pct)})"
+    )
+
+    await update.message.reply_text(
+        message
+    )
+
+
+# ============================================================
+# /add
+# ============================================================
+
+async def add_position(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """
+    /add FPT 1000 120000
+    """
+
+    if len(context.args) != 3:
+        await update.message.reply_text(
+            "❌ Cú pháp:\n"
+            "/add FPT 1000 120000\n\n"
+            "Trong đó:\n"
+            "• FPT = mã cổ phiếu\n"
+            "• 1000 = số lượng\n"
+            "• 120000 = giá vốn"
+        )
+        return
+
+    symbol = (
+        context.args[0]
+        .upper()
+        .strip()
+    )
+
+    try:
+        quantity = float(
+            context.args[1]
+        )
+
+        avg_price = float(
+            context.args[2]
+        )
+
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Số lượng hoặc giá vốn không hợp lệ."
+        )
+        return
+
+    if (
+        not symbol.isalnum()
+        or quantity <= 0
+        or avg_price <= 0
+    ):
+        await update.message.reply_text(
+            "❌ Dữ liệu vị thế không hợp lệ."
+        )
+        return
+
+    positions = portfolio_state[
+        "positions"
+    ]
+
+    if symbol in positions:
+
+        old = positions[symbol]
+
+        old_quantity = float(
+            old.get(
+                "quantity",
+                0,
+            )
+        )
+
+        old_avg_price = float(
+            old.get(
+                "avg_price",
+                0,
+            )
+        )
+
+        new_quantity = (
+            old_quantity + quantity
+        )
+
+        new_avg_price = (
+            (
+                old_quantity
+                * old_avg_price
+            )
+            + (
+                quantity
+                * avg_price
+            )
+        ) / new_quantity
+
+        positions[symbol] = {
+            "quantity": new_quantity,
+            "avg_price": new_avg_price,
+        }
+
+    else:
+
+        positions[symbol] = {
+            "quantity": quantity,
+            "avg_price": avg_price,
+        }
+
+    _save_portfolio()
+
+    await update.message.reply_text(
+        "💼 THÊM VỊ THẾ THÀNH CÔNG\n\n"
+        f"• Mã: {symbol}\n"
+        f"• Số lượng: "
+        f"{_format_number(quantity, 0)}\n"
+        f"• Giá vốn: "
+        f"{_format_price(avg_price)}"
+    )
+
+
+# ============================================================
+# /remove
+# ============================================================
+
+async def remove_position(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """
+    /remove FPT 500
+    """
+
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "❌ Cú pháp:\n"
+            "/remove FPT 500"
+        )
+        return
+
+    symbol = (
+        context.args[0]
+        .upper()
+        .strip()
+    )
+
+    try:
+        quantity = float(
+            context.args[1]
+        )
+
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Số lượng không hợp lệ."
+        )
+        return
+
+    positions = portfolio_state[
+        "positions"
+    ]
+
+    if symbol not in positions:
+        await update.message.reply_text(
+            f"ℹ️ Không có vị thế {symbol}."
+        )
+        return
+
+    if quantity <= 0:
+        await update.message.reply_text(
+            "❌ Số lượng phải lớn hơn 0."
+        )
+        return
+
+    current_quantity = float(
+        positions[symbol].get(
+            "quantity",
+            0,
+        )
+    )
+
+    if quantity >= current_quantity:
+
+        positions.pop(
+            symbol
+        )
+
+        message = (
+            "🗑️ ĐÃ XÓA VỊ THẾ\n\n"
+            f"• Mã: {symbol}"
+        )
+
+    else:
+
+        positions[symbol][
+            "quantity"
+        ] = (
+            current_quantity
+            - quantity
+        )
+
+        message = (
+            "💼 ĐÃ GIẢM VỊ THẾ\n\n"
+            f"• Mã: {symbol}\n"
+            f"• Số lượng bán: "
+            f"{_format_number(quantity, 0)}\n"
+            f"• Còn lại: "
+            f"{_format_number(current_quantity - quantity, 0)}"
+        )
+
+    _save_portfolio()
+
+    await update.message.reply_text(
+        message
+    )
+
+# ============================================================
+# PORTFOLIO HELPERS
+# ============================================================
+
+def _get_position_price(
+    symbol,
+    position,
+):
+    """
+    Lấy giá hiện tại ưu tiên realtime.
+    """
+
+    try:
+        realtime = data_manager.get_realtime_trade(
+            symbol
+        )
+
+        realtime_price = realtime.get(
+            "price"
+        )
+
+        if realtime_price is not None:
+            return float(realtime_price)
+
+    except Exception:
+        pass
+
+    current_price = position.get(
+        "current_price"
+    )
+
+    if current_price is not None:
+        return float(current_price)
+
+    return None
+
+
+# ============================================================
+# /portfolio
+# ============================================================
+
+async def portfolio(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    positions = portfolio_state.get(
+        "positions",
+        {},
+    )
+
+    if not positions:
+        await update.message.reply_text(
+            "💼 PORTFOLIO\n\n"
+            "Danh mục đang trống.\n\n"
+            "Thêm vị thế bằng:\n"
+            "/add FPT 1000 120000"
+        )
+        return
+
+    total_value = 0
+    total_cost = 0
+
+    rows = []
+
+    for symbol, position in positions.items():
+
+        quantity = float(
+            position.get(
+                "quantity",
+                0,
+            )
+        )
+
+        avg_price = float(
+            position.get(
+                "avg_price",
+                0,
+            )
+        )
+
+        current_price = await asyncio.to_thread(
+            _get_position_price,
+            symbol,
+            position,
+        )
+
+        if current_price is None:
+            current_price = avg_price
+
+        cost = quantity * avg_price
+        value = quantity * current_price
+        pnl = value - cost
+
+        total_cost += cost
+        total_value += value
+
+        if cost != 0:
+            pnl_pct = (
+                pnl / cost * 100
+            )
+        else:
+            pnl_pct = 0
+
+        pnl_icon = (
+            "🟢"
+            if pnl >= 0
+            else "🔴"
+        )
+
+        rows.append(
+            f"{pnl_icon} {symbol}\n"
+            f"   SL: {_format_number(quantity, 0)}\n"
+            f"   Giá vốn: {_format_price(avg_price)}\n"
+            f"   Giá hiện tại: {_format_price(current_price)}\n"
+            f"   Giá trị: {_format_number(value, 0)}\n"
+            f"   P/L: {_format_number(pnl, 0)} "
+            f"({_format_pct(pnl_pct)})"
+        )
+
+    total_pnl = (
+        total_value - total_cost
+    )
+
+    if total_cost != 0:
+        total_pnl_pct = (
+            total_pnl
+            / total_cost
+            * 100
+        )
+    else:
+        total_pnl_pct = 0
+
+    message = (
+        "💼 PORTFOLIO\n\n"
+        + "\n\n".join(rows)
+        + "\n\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"💰 Tổng giá trị: "
+        f"{_format_number(total_value, 0)}\n"
+        f"💵 Tổng vốn: "
+        f"{_format_number(total_cost, 0)}\n"
+        f"📈 Tổng P/L: "
+        f"{_format_number(total_pnl, 0)} "
+        f"({_format_pct(total_pnl_pct)})"
+    )
+
+    await update.message.reply_text(
+        message
+    )
+
+
+# ============================================================
+# /add
+# ============================================================
+
+async def add_position(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """
+    /add FPT 1000 120000
+    """
+
+    if len(context.args) != 3:
+        await update.message.reply_text(
+            "❌ Cú pháp:\n"
+            "/add FPT 1000 120000\n\n"
+            "Trong đó:\n"
+            "• FPT = mã cổ phiếu\n"
+            "• 1000 = số lượng\n"
+            "• 120000 = giá vốn"
+        )
+        return
+
+    symbol = (
+        context.args[0]
+        .upper()
+        .strip()
+    )
+
+    try:
+        quantity = float(
+            context.args[1]
+        )
+
+        avg_price = float(
+            context.args[2]
+        )
+
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Số lượng hoặc giá vốn không hợp lệ."
+        )
+        return
+
+    if (
+        not symbol.isalnum()
+        or quantity <= 0
+        or avg_price <= 0
+    ):
+        await update.message.reply_text(
+            "❌ Dữ liệu vị thế không hợp lệ."
+        )
+        return
+
+    positions = portfolio_state[
+        "positions"
+    ]
+
+    if symbol in positions:
+
+        old = positions[symbol]
+
+        old_quantity = float(
+            old.get(
+                "quantity",
+                0,
+            )
+        )
+
+        old_avg_price = float(
+            old.get(
+                "avg_price",
+                0,
+            )
+        )
+
+        new_quantity = (
+            old_quantity + quantity
+        )
+
+        new_avg_price = (
+            (
+                old_quantity
+                * old_avg_price
+            )
+            + (
+                quantity
+                * avg_price
+            )
+        ) / new_quantity
+
+        positions[symbol] = {
+            "quantity": new_quantity,
+            "avg_price": new_avg_price,
+        }
+
+    else:
+
+        positions[symbol] = {
+            "quantity": quantity,
+            "avg_price": avg_price,
+        }
+
+    _save_portfolio()
+
+    await update.message.reply_text(
+        "💼 THÊM VỊ THẾ THÀNH CÔNG\n\n"
+        f"• Mã: {symbol}\n"
+        f"• Số lượng: "
+        f"{_format_number(quantity, 0)}\n"
+        f"• Giá vốn: "
+        f"{_format_price(avg_price)}"
+    )
+
+
+# ============================================================
+# /remove
+# ============================================================
+
+async def remove_position(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """
+    /remove FPT 500
+    """
+
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "❌ Cú pháp:\n"
+            "/remove FPT 500"
+        )
+        return
+
+    symbol = (
+        context.args[0]
+        .upper()
+        .strip()
+    )
+
+    try:
+        quantity = float(
+            context.args[1]
+        )
+
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Số lượng không hợp lệ."
+        )
+        return
+
+    positions = portfolio_state[
+        "positions"
+    ]
+
+    if symbol not in positions:
+        await update.message.reply_text(
+            f"ℹ️ Không có vị thế {symbol}."
+        )
+        return
+
+    if quantity <= 0:
+        await update.message.reply_text(
+            "❌ Số lượng phải lớn hơn 0."
+        )
+        return
+
+    current_quantity = float(
+        positions[symbol].get(
+            "quantity",
+            0,
+        )
+    )
+
+    if quantity >= current_quantity:
+
+        positions.pop(
+            symbol
+        )
+
+        message = (
+            "🗑️ ĐÃ XÓA VỊ THẾ\n\n"
+            f"• Mã: {symbol}"
+        )
+
+    else:
+
+        positions[symbol][
+            "quantity"
+        ] = (
+            current_quantity
+            - quantity
+        )
+
+        message = (
+            "💼 ĐÃ GIẢM VỊ THẾ\n\n"
+            f"• Mã: {symbol}\n"
+            f"• Số lượng bán: "
+            f"{_format_number(quantity, 0)}\n"
+            f"• Còn lại: "
+            f"{_format_number(current_quantity - quantity, 0)}"
+        )
+
+    _save_portfolio()
+
+    await update.message.reply_text(
+        message
+    )
 
 # ============================================================
 # STOCK ANALYSIS
@@ -841,15 +1835,30 @@ async def start(
         "Bot phân tích tín hiệu đầu tư "
         "chứng khoán.\n\n"
 
-        "Các lệnh:\n"
-        "/start - Xem hướng dẫn\n"
-        "/signals - Xem tín hiệu BUY hôm nay\n"
-        "/signal ABB - Xem tín hiệu cổ phiếu\n"
+        "📊 PHÂN TÍCH\n"
+        "/market - Tổng quan VNINDEX\n"
+        "/signals - Quét tín hiệu BUY\n"
+        "/signal ABB - Tín hiệu cổ phiếu\n"
         "/analyze ABB - Phân tích chi tiết + biểu đồ\n"
-        "/subscribe ABB - Đăng ký cảnh báo\n"
-        "/unsubscribe ABB - Hủy cảnh báo\n"
+        "/compare ABB FPT - So sánh 2 cổ phiếu\n"
+        "/explain ABB - Giải thích tín hiệu\n"
         "/backtest ABB - Backtest 180 ngày\n"
-        "/backtest ABB 365 - Backtest 365 ngày"
+        "/backtest ABB 365 - Backtest 365 ngày\n\n"
+
+        "⭐ WATCHLIST\n"
+        "/watchlist - Xem watchlist\n"
+        "/watchadd ABB - Thêm mã\n"
+        "/watchremove ABB - Xóa mã\n\n"
+
+        "🔔 ALERT\n"
+        "/subscribe ABB - Bật cảnh báo\n"
+        "/unsubscribe ABB - Tắt cảnh báo\n\n"
+
+        "💼 PORTFOLIO\n"
+        "/portfolio - Xem danh mục\n"
+        "/add ABB 1000 25000 - Thêm vị thế\n"
+        "/remove ABB 500 - Giảm vị thế\n"
+        "/risk - Phân tích rủi ro"
     )
 
     await update.message.reply_text(
@@ -1214,7 +2223,528 @@ async def analyze(
             f"Lỗi: {error}"
         )
 
+# ============================================================
+# /compare
+# ============================================================
 
+async def compare(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """
+    So sánh 2 cổ phiếu.
+
+    Cú pháp:
+
+        /compare ACB FPT
+    """
+
+    # --------------------------------------------------------
+    # Kiểm tra số lượng mã
+    # --------------------------------------------------------
+
+    if len(context.args) != 2:
+
+        await update.message.reply_text(
+            "❌ Vui lòng nhập đúng 2 mã cổ phiếu.\n\n"
+            "Ví dụ:\n"
+            "/compare ACB FPT"
+        )
+
+        return
+
+    symbols = [
+        argument.upper().strip()
+        for argument in context.args
+    ]
+
+    # --------------------------------------------------------
+    # Kiểm tra mã hợp lệ
+    # --------------------------------------------------------
+
+    if not all(
+        symbol.isalnum()
+        for symbol in symbols
+    ):
+
+        await update.message.reply_text(
+            "❌ Mã cổ phiếu không hợp lệ."
+        )
+
+        return
+
+    symbol_1, symbol_2 = symbols
+
+    await update.message.reply_text(
+        f"📊 Đang so sánh {symbol_1} và {symbol_2}...\n"
+        "Vui lòng chờ trong giây lát."
+    )
+
+    try:
+
+        # ----------------------------------------------------
+        # Lấy dữ liệu song song
+        # ----------------------------------------------------
+
+        result_1, result_2 = await asyncio.gather(
+            asyncio.to_thread(
+                build_stock_analysis,
+                symbol_1,
+            ),
+            asyncio.to_thread(
+                build_stock_analysis,
+                symbol_2,
+            ),
+        )
+
+        # ----------------------------------------------------
+        # Message
+        # ----------------------------------------------------
+
+        def _condition_text(value):
+            return "✅ ĐẠT" if value else "❌ KHÔNG ĐẠT"
+
+
+        def _build_compare_section(symbol, data):
+            realtime_price = data.get("realtime_price")
+
+            if realtime_price is not None:
+                price = realtime_price
+            else:
+                price = data.get("current_price")
+
+            market_cap = data.get("market_cap")
+
+            if market_cap is not None:
+                market_cap_text = f"{market_cap / 1_000_000_000:,.2f} tỷ"
+            else:
+                market_cap_text = "N/A"
+
+            return (
+                f"🔵 {symbol}\n\n"
+
+                f"💰 Giá hiện tại: "
+                f"{_format_price(price)}\n"
+
+                f"📈 Tăng trưởng DT: "
+                f"{_format_pct(data.get('revenue_growth'))}\n"
+
+                f"📈 Tăng trưởng LN: "
+                f"{_format_pct(data.get('net_income_growth'))}\n"
+
+                f"🏦 ROE: "
+                f"{_format_pct(data.get('roe'))}\n"
+
+                f"💳 D/E: "
+                f"{_format_number(data.get('debt_equity'))}\n"
+
+                f"💵 EPS: "
+                f"{_format_number(data.get('eps'), 0)}\n"
+
+                f"📐 P/E: "
+                f"{_format_number(data.get('pe'))}\n"
+
+                f"📐 P/B: "
+                f"{_format_number(data.get('pb'))}\n"
+
+                f"💼 Vốn hóa: "
+                f"{market_cap_text}\n\n"
+
+                f"🎯 Strategy 2\n"
+
+                f"• Cơ bản: "
+                f"{_condition_text(data.get('fundamental_pass'))}\n"
+
+                f"• Volume Breakout: "
+                f"{_condition_text(data.get('volume_breakout'))}\n"
+
+                f"• Price Momentum: "
+                f"{_condition_text(data.get('price_momentum'))}\n"
+
+                f"• Tín hiệu: "
+                f"{_format_signal(data.get('signal'))}"
+            )
+        
+        message = (
+            f"📊 SO SÁNH CỔ PHIẾU\n"
+            f"{symbol_1} ↔ {symbol_2}\n\n"
+
+            f"━━━━━━━━━━━━━━━━\n"
+            f"{_build_compare_section(symbol_1, result_1)}\n\n"
+
+            f"━━━━━━━━━━━━━━━━\n"
+            f"{_build_compare_section(symbol_2, result_2)}"
+        )
+
+        await update.message.reply_text(
+            message
+        )
+
+    except Exception as error:
+
+        await update.message.reply_text(
+            "❌ Không thể so sánh cổ phiếu.\n\n"
+            f"Lỗi: {error}"
+        )
+# ============================================================
+# /explain
+# ============================================================
+
+async def explain(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """
+    Giải thích chi tiết vì sao cổ phiếu
+    đạt hoặc không đạt Strategy 2.
+    """
+
+    # --------------------------------------------------------
+    # Kiểm tra mã
+    # --------------------------------------------------------
+
+    if len(context.args) != 1:
+
+        await update.message.reply_text(
+            "❌ Vui lòng nhập đúng 1 mã cổ phiếu.\n\n"
+            "Ví dụ:\n"
+            "/explain ACB"
+        )
+
+        return
+
+    symbol = (
+        context.args[0]
+        .upper()
+        .strip()
+    )
+
+    if not symbol.isalnum():
+
+        await update.message.reply_text(
+            "❌ Mã cổ phiếu không hợp lệ."
+        )
+
+        return
+
+    await update.message.reply_text(
+        f"🔍 Đang giải thích tín hiệu {symbol}..."
+    )
+
+    try:
+
+        result = await asyncio.to_thread(
+            build_stock_analysis,
+            symbol,
+        )
+
+        # ----------------------------------------------------
+        # Fundamental values
+        # ----------------------------------------------------
+
+        revenue_growth = result.get(
+            "revenue_growth"
+        )
+
+        net_income_growth = result.get(
+            "net_income_growth"
+        )
+
+        roe = result.get(
+            "roe"
+        )
+
+        # ----------------------------------------------------
+        # Technical values
+        # ----------------------------------------------------
+
+        close = result.get(
+            "close"
+        )
+
+        price_ma20 = result.get(
+            "price_ma20"
+        )
+
+        volume_ratio = result.get(
+            "volume_ratio"
+        )
+
+        # ----------------------------------------------------
+        # Conditions
+        # ----------------------------------------------------
+
+        revenue_pass = (
+            revenue_growth is not None
+            and revenue_growth > 15
+        )
+
+        net_income_pass = (
+            net_income_growth is not None
+            and net_income_growth > 15
+        )
+
+        roe_pass = (
+            roe is not None
+            and roe > 15
+        )
+
+        volume_pass = (
+            volume_ratio is not None
+            and volume_ratio >= 1.5
+        )
+
+        momentum_pass = (
+            close is not None
+            and price_ma20 is not None
+            and close > price_ma20
+        )
+
+        fundamental_pass = (
+            revenue_pass
+            and net_income_pass
+            and roe_pass
+        )
+
+        # ----------------------------------------------------
+        # Signal
+        # ----------------------------------------------------
+
+        signal_value = result.get(
+            "signal"
+        )
+
+        if signal_value == "MUA":
+
+            signal_text = "🟢 MUA"
+
+        elif signal_value == "BÁN":
+
+            signal_text = "🔴 BÁN"
+
+        else:
+
+            signal_text = "⚪ KHÔNG CÓ TÍN HIỆU"
+
+        # ----------------------------------------------------
+        # Fundamental explanation
+        # ----------------------------------------------------
+
+        if revenue_growth is None:
+
+            revenue_text = (
+                "❌ Revenue Growth\n"
+                "   Không có dữ liệu"
+            )
+
+        elif revenue_pass:
+
+            revenue_text = (
+                "✅ Revenue Growth\n"
+                f"   {_format_pct(revenue_growth)} > 15%"
+            )
+
+        else:
+
+            revenue_text = (
+                "❌ Revenue Growth\n"
+                f"   {_format_pct(revenue_growth)} ≤ 15%"
+            )
+
+        if net_income_growth is None:
+
+            net_income_text = (
+                "❌ Net Income Growth\n"
+                "   Không có dữ liệu"
+            )
+
+        elif net_income_pass:
+
+            net_income_text = (
+                "✅ Net Income Growth\n"
+                f"   {_format_pct(net_income_growth)} > 15%"
+            )
+
+        else:
+
+            net_income_text = (
+                "❌ Net Income Growth\n"
+                f"   {_format_pct(net_income_growth)} ≤ 15%"
+            )
+
+        if roe is None:
+
+            roe_text = (
+                "❌ ROE\n"
+                "   Không có dữ liệu"
+            )
+
+        elif roe_pass:
+
+            roe_text = (
+                "✅ ROE\n"
+                f"   {_format_pct(roe)} > 15%"
+            )
+
+        else:
+
+            roe_text = (
+                "❌ ROE\n"
+                f"   {_format_pct(roe)} ≤ 15%"
+            )
+
+        # ----------------------------------------------------
+        # Volume explanation
+        # ----------------------------------------------------
+
+        if volume_ratio is None:
+
+            volume_text = (
+                "❌ Volume Breakout\n"
+                "   Không có dữ liệu"
+            )
+
+        elif volume_pass:
+
+            volume_text = (
+                "✅ Volume Breakout\n"
+                f"   Volume Ratio: "
+                f"{_format_number(volume_ratio)}x\n"
+                "   Yêu cầu: ≥ 1.50x"
+            )
+
+        else:
+
+            volume_text = (
+                "❌ Volume Breakout\n"
+                f"   Volume Ratio: "
+                f"{_format_number(volume_ratio)}x\n"
+                "   Yêu cầu: ≥ 1.50x"
+            )
+
+        # ----------------------------------------------------
+        # Momentum explanation
+        # ----------------------------------------------------
+
+        if (
+            close is None
+            or price_ma20 is None
+        ):
+
+            momentum_text = (
+                "❌ Price Momentum\n"
+                "   Không có đủ dữ liệu"
+            )
+
+        elif momentum_pass:
+
+            momentum_text = (
+                "✅ Price Momentum\n"
+                f"   Close: {_format_price(close)}\n"
+                f"   MA20: {_format_price(price_ma20)}\n"
+                "   Yêu cầu: Close > MA20"
+            )
+
+        else:
+
+            momentum_text = (
+                "❌ Price Momentum\n"
+                f"   Close: {_format_price(close)}\n"
+                f"   MA20: {_format_price(price_ma20)}\n"
+                "   Yêu cầu: Close > MA20"
+            )
+
+        # ----------------------------------------------------
+        # Conclusion
+        # ----------------------------------------------------
+
+        if signal_value == "MUA":
+
+            conclusion = (
+                "💡 KẾT LUẬN\n\n"
+                "Cổ phiếu thỏa mãn đầy đủ "
+                "các điều kiện BUY của Strategy 2."
+            )
+
+        elif signal_value == "BÁN":
+
+            conclusion = (
+                "💡 KẾT LUẬN\n\n"
+                "Cổ phiếu đang có tín hiệu SELL "
+                "theo điều kiện thoát lệnh."
+            )
+
+        else:
+
+            failed_conditions = []
+
+            if not fundamental_pass:
+                failed_conditions.append(
+                    "Fundamental"
+                )
+
+            if not volume_pass:
+                failed_conditions.append(
+                    "Volume Breakout"
+                )
+
+            if not momentum_pass:
+                failed_conditions.append(
+                    "Price Momentum"
+                )
+
+            conclusion = (
+                "💡 KẾT LUẬN\n\n"
+                "Cổ phiếu chưa thỏa mãn đầy đủ "
+                "các điều kiện của Strategy 2.\n\n"
+                "Điều kiện chưa đạt: "
+                + ", ".join(
+                    failed_conditions
+                )
+            )
+
+        # ----------------------------------------------------
+        # Final message
+        # ----------------------------------------------------
+
+        message = (
+            f"📊 GIẢI THÍCH TÍN HIỆU\n"
+            f"{symbol}\n\n"
+
+            f"🎯 KẾT QUẢ\n"
+            f"{signal_text}\n\n"
+
+            f"━━━━━━━━━━━━━━━━\n"
+            f"📌 FUNDAMENTAL\n\n"
+
+            f"{revenue_text}\n\n"
+            f"{net_income_text}\n\n"
+            f"{roe_text}\n\n"
+
+            f"→ Fundamental: "
+            f"{'✅ ĐẠT' if fundamental_pass else '❌ KHÔNG ĐẠT'}\n\n"
+
+            f"━━━━━━━━━━━━━━━━\n"
+            f"📈 TECHNICAL\n\n"
+
+            f"{volume_text}\n\n"
+            f"{momentum_text}\n\n"
+
+            f"━━━━━━━━━━━━━━━━\n"
+            f"{conclusion}"
+        )
+
+        await update.message.reply_text(
+            message
+        )
+
+    except Exception as error:
+
+        await update.message.reply_text(
+            f"❌ Không thể giải thích "
+            f"tín hiệu {symbol}.\n\n"
+            f"Lỗi: {error}"
+        )
 # ============================================================
 # /subscribe
 # ============================================================
@@ -1727,7 +3257,624 @@ async def backtest(
             f"Lỗi: {error}"
         )
 
+async def explain(update, context):
+    if not context.args:
+        await update.message.reply_text(
+            "❗ Cú pháp:\n"
+            "/explain <MÃ>\n\n"
+            "Ví dụ:\n"
+            "/explain BVL"
+        )
+        return
 
+    symbol = context.args[0].upper().strip()
+
+    try:
+        result = await asyncio.to_thread(
+            build_stock_analysis,
+            symbol,
+        )
+
+        signal_value = result.get("signal", "NO_SIGNAL")
+
+        if signal_value == "BUY":
+            signal_text = "🟢 BUY"
+        elif signal_value == "SELL":
+            signal_text = "🔴 SELL"
+        else:
+            signal_text = "⚪ KHÔNG CÓ TÍN HIỆU"
+
+        fundamental_pass = result.get("fundamental_pass", False)
+        volume_breakout = result.get("volume_breakout", False)
+        price_momentum = result.get("price_momentum", False)
+
+        reasons = []
+
+        if fundamental_pass:
+            reasons.append("• Cơ bản: ✅ ĐẠT")
+        else:
+            reasons.append("• Cơ bản: ❌ KHÔNG ĐẠT")
+
+        if volume_breakout:
+            reasons.append("• Bứt phá khối lượng: ✅ ĐẠT")
+        else:
+            reasons.append("• Bứt phá khối lượng: ❌ KHÔNG ĐẠT")
+
+        if price_momentum:
+            reasons.append("• Động lượng giá: ✅ ĐẠT")
+        else:
+            reasons.append("• Động lượng giá: ❌ KHÔNG ĐẠT")
+
+        revenue_growth = result.get("revenue_growth")
+        net_income_growth = result.get("net_income_growth")
+        roe = result.get("roe")
+
+        if revenue_growth is not None:
+            revenue_text = f"{revenue_growth:.2f}%"
+        else:
+            revenue_text = "N/A"
+
+        if net_income_growth is not None:
+            income_text = f"{net_income_growth:.2f}%"
+        else:
+            income_text = "N/A"
+
+        if roe is not None:
+            roe_text = f"{roe:.2f}%"
+        else:
+            roe_text = "N/A"
+
+        message = (
+            f"🔎 GIẢI THÍCH TÍN HIỆU — {symbol}\n\n"
+
+            f"🎯 Tín hiệu hiện tại: {signal_text}\n\n"
+
+            f"📊 ĐIỀU KIỆN CƠ BẢN\n"
+            f"• Tăng trưởng doanh thu: {revenue_text} "
+            f"(yêu cầu > 15%)\n"
+            f"• Tăng trưởng lợi nhuận: {income_text} "
+            f"(yêu cầu > 15%)\n"
+            f"• ROE: {roe_text} "
+            f"(yêu cầu > 15%)\n\n"
+
+            f"🔎 ĐIỀU KIỆN CHIẾN LƯỢC\n"
+            + "\n".join(reasons)
+            + "\n\n"
+
+            f"📌 KẾT LUẬN\n"
+        )
+
+        if signal_value == "BUY":
+            message += (
+                "Cổ phiếu thỏa mãn các điều kiện BUY của Strategy 2."
+            )
+        elif signal_value == "SELL":
+            message += (
+                "Cổ phiếu đang thỏa mãn điều kiện SELL của hệ thống."
+            )
+        else:
+            failed_conditions = []
+
+            if not fundamental_pass:
+                failed_conditions.append("điều kiện cơ bản")
+
+            if not volume_breakout:
+                failed_conditions.append("bứt phá khối lượng")
+
+            if not price_momentum:
+                failed_conditions.append("động lượng giá")
+
+            if failed_conditions:
+                message += (
+                    "Chưa có tín hiệu vì chưa đồng thời đạt: "
+                    + ", ".join(failed_conditions)
+                    + "."
+                )
+            else:
+                message += (
+                    "Các điều kiện chính chưa tạo thành tín hiệu BUY/SELL."
+                )
+
+        await update.message.reply_text(message)
+
+    except Exception as exc:
+        await update.message.reply_text(
+            f"❌ Không thể phân tích {symbol}.\n"
+            f"Lỗi: {exc}"
+        )
+
+# ============================================================
+# /market
+# ============================================================
+
+async def market(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """
+    Tổng quan VNINDEX trong khoảng 30 phiên gần nhất.
+    """
+
+    await update.message.reply_text(
+        "📊 Đang lấy dữ liệu thị trường..."
+    )
+
+    try:
+        start_timestamp, end_timestamp = (
+            _get_timestamp_range(
+                days=60
+            )
+        )
+
+        # DataManager hiện có lớp quản lý VNINDEX.
+        market_manager = data_manager.market_manager
+
+        market_df = await asyncio.to_thread(
+            market_manager.get_market_data,
+            start_timestamp,
+            end_timestamp,
+        )
+
+        if market_df.empty:
+            raise ValueError(
+                "Không có dữ liệu VNINDEX."
+            )
+
+        latest = market_df.iloc[-1]
+
+        close = latest.get("close")
+        volume = latest.get("volume")
+
+        previous_close = None
+
+        if len(market_df) >= 2:
+            previous_close = market_df.iloc[-2].get(
+                "close"
+            )
+
+        if (
+            close is not None
+            and previous_close is not None
+            and previous_close != 0
+        ):
+            change_pct = (
+                (close - previous_close)
+                / previous_close
+                * 100
+            )
+        else:
+            change_pct = None
+
+        if change_pct is None:
+            change_text = "N/A"
+        elif change_pct > 0:
+            change_text = f"🟢 +{change_pct:.2f}%"
+        elif change_pct < 0:
+            change_text = f"🔴 {change_pct:.2f}%"
+        else:
+            change_text = "⚪ 0.00%"
+
+        message = (
+            "📊 TỔNG QUAN THỊ TRƯỜNG\n\n"
+            "🇻🇳 VNINDEX\n"
+            f"• Điểm số: {_format_price(close)}\n"
+            f"• Thay đổi: {change_text}\n"
+            f"• Khối lượng: {_format_number(volume, 0)}\n\n"
+            "📅 Phạm vi dữ liệu\n"
+            f"• Số phiên: {len(market_df)}\n\n"
+            "💡 Bot sử dụng VNINDEX để cung cấp "
+            "bối cảnh thị trường; tín hiệu BUY/SELL "
+            "vẫn được xác định riêng theo Strategy 2."
+        )
+
+        await update.message.reply_text(
+            message
+        )
+
+    except Exception as error:
+        await update.message.reply_text(
+            "❌ Không thể lấy dữ liệu thị trường.\n\n"
+            f"Lỗi: {error}"
+        )
+
+# ============================================================
+# /watchlist
+# ============================================================
+
+async def watchlist(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    symbols = watchlist_state.get(
+        "symbols",
+        [],
+    )
+
+    if not symbols:
+        await update.message.reply_text(
+            "⭐ WATCHLIST\n\n"
+            "Watchlist đang trống.\n\n"
+            "Thêm mã bằng:\n"
+            "/watchadd FPT"
+        )
+        return
+
+    lines = [
+        "⭐ WATCHLIST",
+        "",
+    ]
+
+    for symbol in symbols:
+        lines.append(
+            f"• {symbol}"
+        )
+
+    lines.extend([
+        "",
+        "Thêm: /watchadd FPT",
+        "Xóa: /watchremove FPT",
+        "",
+        "Watchlist được dùng để theo dõi "
+        "tín hiệu Strategy 2."
+    ])
+
+    await update.message.reply_text(
+        "\n".join(lines)
+    )
+
+
+# ============================================================
+# /watchadd
+# ============================================================
+
+async def watchadd(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if len(context.args) != 1:
+        await update.message.reply_text(
+            "❌ Cú pháp:\n"
+            "/watchadd FPT"
+        )
+        return
+
+    symbol = (
+        context.args[0]
+        .upper()
+        .strip()
+    )
+
+    if not symbol.isalnum():
+        await update.message.reply_text(
+            "❌ Mã cổ phiếu không hợp lệ."
+        )
+        return
+
+    if symbol in watchlist_state["symbols"]:
+        await update.message.reply_text(
+            f"⭐ {symbol} đã có trong watchlist."
+        )
+        return
+
+    await update.message.reply_text(
+        f"🔎 Đang kiểm tra {symbol}..."
+    )
+
+    try:
+        result = await asyncio.to_thread(
+            _build_signal_snapshot,
+            symbol,
+        )
+
+        current_signal = (
+            result.get("signal")
+            or "NO_SIGNAL"
+        )
+
+        watchlist_state["symbols"].append(
+            symbol
+        )
+
+        watchlist_state["symbols"] = sorted(
+            set(watchlist_state["symbols"])
+        )
+
+        _save_watchlist()
+
+        await update.message.reply_text(
+            "⭐ THÊM WATCHLIST THÀNH CÔNG\n\n"
+            f"• Mã: {symbol}\n"
+            f"• Tín hiệu hiện tại: "
+            f"{_format_signal(current_signal)}\n\n"
+            "Bot sẽ theo dõi thay đổi tín hiệu "
+            "Strategy 2 của mã này."
+        )
+
+    except Exception as error:
+        await update.message.reply_text(
+            f"❌ Không thể thêm {symbol}.\n\n"
+            f"Lỗi: {error}"
+        )
+
+
+# ============================================================
+# /watchremove
+# ============================================================
+
+async def watchremove(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if len(context.args) != 1:
+        await update.message.reply_text(
+            "❌ Cú pháp:\n"
+            "/watchremove FPT"
+        )
+        return
+
+    symbol = (
+        context.args[0]
+        .upper()
+        .strip()
+    )
+
+    if symbol not in watchlist_state["symbols"]:
+        await update.message.reply_text(
+            f"ℹ️ {symbol} không có trong watchlist."
+        )
+        return
+
+    watchlist_state["symbols"].remove(
+        symbol
+    )
+
+    _save_watchlist()
+
+    await update.message.reply_text(
+        "🗑️ ĐÃ XÓA KHỎI WATCHLIST\n\n"
+        f"• Mã: {symbol}"
+    )
+def _get_chat_portfolio(chat_id):
+    chat_id = str(chat_id)
+
+    if chat_id not in portfolio_state:
+        portfolio_state[chat_id] = {}
+
+    return portfolio_state[chat_id]
+
+def _get_current_price(symbol):
+    symbol = symbol.upper().strip()
+
+    # Ưu tiên giá realtime
+    try:
+        realtime = data_manager.get_realtime_trade(symbol)
+
+        if realtime and realtime.get("price") is not None:
+            return float(realtime["price"])
+    except Exception:
+        pass
+
+    # Nếu không lấy được realtime thì lấy giá đóng cửa gần nhất
+    start_timestamp, end_timestamp = _get_timestamp_range(30)
+
+    market_df = data_manager.get_market_data(
+        symbol,
+        start_timestamp,
+        end_timestamp,
+    )
+
+    if market_df is None or market_df.empty:
+        raise ValueError(f"Không lấy được dữ liệu giá của {symbol}")
+
+    latest_close = market_df.iloc[-1].get("close")
+
+    if latest_close is None:
+        raise ValueError(f"Không có giá đóng cửa của {symbol}")
+
+    return float(latest_close)
+
+# ============================================================
+# /risk
+# ============================================================
+
+async def risk(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """
+    Phân tích rủi ro danh mục hiện tại.
+
+    Rule:
+        - Tỷ trọng một mã > 30%  -> cảnh báo tập trung
+        - P/L <= -5%             -> cảnh báo mức lỗ
+    """
+
+    positions = portfolio_state.get(
+        "positions",
+        {},
+    )
+
+    # --------------------------------------------------------
+    # Portfolio trống
+    # --------------------------------------------------------
+
+    if not positions:
+
+        await update.message.reply_text(
+            "⚠️ PORTFOLIO RỦI RO\n\n"
+            "Danh mục đang trống.\n\n"
+            "Thêm vị thế bằng:\n"
+            "/add A32 100 27500"
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # Tính giá trị từng vị thế
+    # --------------------------------------------------------
+
+    rows = []
+
+    total_value = 0
+
+    for symbol, position in positions.items():
+
+        quantity = float(
+            position.get(
+                "quantity",
+                0,
+            )
+        )
+
+        avg_price = float(
+            position.get(
+                "avg_price",
+                0,
+            )
+        )
+
+        current_price = await asyncio.to_thread(
+            _get_position_price,
+            symbol,
+            position,
+        )
+
+        # Nếu không lấy được realtime
+        # dùng giá vốn để không làm crash risk
+        if current_price is None:
+            current_price = avg_price
+
+        cost = (
+            quantity
+            * avg_price
+        )
+
+        value = (
+            quantity
+            * current_price
+        )
+
+        pnl = (
+            value
+            - cost
+        )
+
+        if cost != 0:
+
+            pnl_pct = (
+                pnl
+                / cost
+                * 100
+            )
+
+        else:
+
+            pnl_pct = 0
+
+        total_value += value
+
+        rows.append(
+            {
+                "symbol": symbol,
+                "quantity": quantity,
+                "avg_price": avg_price,
+                "current_price": current_price,
+                "cost": cost,
+                "value": value,
+                "pnl": pnl,
+                "pnl_pct": pnl_pct,
+            }
+        )
+
+    # --------------------------------------------------------
+    # Phân tích rủi ro
+    # --------------------------------------------------------
+
+    lines = [
+        "⚠️ PORTFOLIO RỦI RO",
+        "",
+        f"💰 Tổng giá trị: "
+        f"{_format_number(total_value, 0)}",
+        "",
+    ]
+
+    for row in rows:
+
+        symbol = row["symbol"]
+        value = row["value"]
+        pnl_pct = row["pnl_pct"]
+
+        if total_value != 0:
+
+            weight = (
+                value
+                / total_value
+                * 100
+            )
+
+        else:
+
+            weight = 0
+
+        warnings = []
+
+        # ----------------------------------------------------
+        # Concentration risk
+        # ----------------------------------------------------
+
+        if weight > 30:
+
+            warnings.append(
+                "⚠️ Tập trung >30%"
+            )
+
+        # ----------------------------------------------------
+        # Loss risk
+        # ----------------------------------------------------
+
+        if pnl_pct <= -5:
+
+            warnings.append(
+                "🛑 P/L ≤ -5%"
+            )
+
+        if not warnings:
+
+            warnings.append(
+                "✅ Không có cảnh báo"
+            )
+
+        lines.append(
+            f"📌 {symbol}\n"
+            f"   • Tỷ trọng: "
+            f"{_format_pct(weight)}\n"
+            f"   • P/L: "
+            f"{_format_pct(pnl_pct)}\n"
+            f"   • "
+            f"{' | '.join(warnings)}\n"
+        )
+
+    # --------------------------------------------------------
+    # Rule hệ thống
+    # --------------------------------------------------------
+
+    lines.extend(
+        [
+            "━━━━━━━━━━━━━━━━",
+            "📋 QUY TẮC RỦI RO",
+            "",
+            "• Tỷ trọng >30%: cảnh báo tập trung",
+            "• P/L ≤ -5%: cảnh báo mức lỗ",
+            "",
+            "ℹ️ Đây là cảnh báo theo rule "
+            "của hệ thống, không tự động bán."
+        ]
+    )
+
+    await update.message.reply_text(
+        "\n".join(lines)
+    )
+    
 # ============================================================
 # CREATE BOT
 # ============================================================
@@ -1784,6 +3931,20 @@ def create_bot():
 
     application.add_handler(
         CommandHandler(
+            "compare",
+            compare,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "explain",
+            explain,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
             "subscribe",
             subscribe,
         )
@@ -1803,4 +3964,59 @@ def create_bot():
         )
     )
 
+    application.add_handler(
+        CommandHandler(
+            "market",
+            market,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "watchlist",
+            watchlist,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "watchadd",
+            watchadd,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "watchremove",
+            watchremove,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "portfolio",
+            portfolio,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "add",
+            add_position,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "remove",
+            remove_position,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "risk",
+            risk,
+        )
+    )
     return application
