@@ -23,6 +23,8 @@ class DataManager:
         self.dnse = DNSEDataClient()
         self.vnstock = VnstockFundamentalClient()
         self.realtime = VnstockRealtimeClient()
+        self.market_manager = MarketDataManager()
+        
 
     # ============================================================
     # DNSE - MARKET DATA
@@ -352,7 +354,6 @@ class MarketDataManager:
         self.dnse = DNSEDataClient()
         self.vnstock_client = VnstockFundamentalClient()
         self.realtime_client = VnstockRealtimeClient()
-        self.market_manager = MarketDataManager()
 
     def get_historical_index(
         self,
