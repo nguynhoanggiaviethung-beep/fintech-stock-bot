@@ -350,6 +350,9 @@ class MarketDataManager:
 
     def __init__(self):
         self.dnse = DNSEDataClient()
+        self.vnstock_client = VnstockFundamentalClient()
+        self.realtime_client = VnstockRealtimeClient()
+        self.market_manager = MarketDataManager()
 
     def get_historical_index(
         self,
