@@ -6,7 +6,7 @@ Dự án được xây dựng bằng Python, kết hợp dữ liệu thị trư�
 
 ## Mục tiêu dự án
 
-Fintech Stock Bot được xây dựng với các mục tiêu chính:
+FinStockVN Bot được xây dựng với các mục tiêu chính:
 
 - Thu thập dữ liệu giá và khối lượng giao dịch cổ phiếu Việt Nam.
 - Lấy dữ liệu tài chính của doanh nghiệp.
