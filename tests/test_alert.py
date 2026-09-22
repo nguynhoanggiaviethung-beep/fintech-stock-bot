@@ -86,7 +86,10 @@ async def run_test():
 
     assert chat_id == 123456
     assert "ABB" in message
-    assert "BUY" in message
+    assert (
+        "BUY" in message
+        or "MUA" in message
+    )
     assert "89.47%" in message
     assert "379.65%" in message
     assert "18.22%" in message

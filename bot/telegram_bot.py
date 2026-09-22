@@ -437,6 +437,9 @@ def _build_signal_snapshot(
 
     Không tạo chart và không lấy realtime trade,
     vì alert chỉ cần SignalEngine.
+
+    Có kiểm tra portfolio để SignalEngine
+    có thể phát hiện SELL đối với vị thế đang nắm giữ.
     """
 
     symbol = (
@@ -485,10 +488,57 @@ def _build_signal_snapshot(
             f"cho {symbol}."
         )
 
+    # --------------------------------------------------------
+    # PORTFOLIO POSITION
+    # --------------------------------------------------------
+
+    position = (
+        portfolio_state
+        .get("positions", {})
+        .get(symbol)
+    )
+
+    position_held = (
+        position is not None
+        and float(
+            position.get(
+                "quantity",
+                0
+            )
+        ) > 0
+    )
+
+    entry_price = None
+
+    if position_held:
+
+        entry_price = float(
+            position.get(
+                "avg_price",
+                0
+            )
+        )
+
+    print(
+        "DEBUG ALERT POSITION:",
+        symbol,
+        position,
+        "position_held=",
+        position_held,
+        "entry_price=",
+        entry_price,
+    )
+
+    # --------------------------------------------------------
+    # SIGNAL ENGINE
+    # --------------------------------------------------------
+
     result = signal_engine.analyze(
         market_df=market_df,
         fundamental_df=fundamental_df,
         symbol=symbol,
+        position_held=position_held,
+        entry_price=entry_price,
     )
 
     return result
@@ -588,12 +638,12 @@ async def _check_subscriptions(
                     "BUY",
                     "SELL",
                 }:
-
                     continue
 
-                signal_text = _format_signal(
-                    current_signal
-                )
+                if current_signal == "BUY":
+                    signal_text = "🟢 MUA"
+                else:
+                    signal_text = "🔴 BÁN"
 
                 message = (
                     "🚨 CẢNH BÁO TÍN HIỆU\n\n"
@@ -1610,6 +1660,75 @@ def build_stock_analysis(
         )
 
     # --------------------------------------------------------
+    # PORTFOLIO POSITION
+    # --------------------------------------------------------
+
+    position = (
+        portfolio_state
+        .get("positions", {})
+        .get(symbol)
+    )
+
+    position_held = (
+        position is not None
+        and float(
+            position.get("quantity", 0)
+        ) > 0
+    )
+
+    entry_price = None
+
+    if position_held:
+        entry_price = float(
+            position.get(
+                "avg_price",
+                0
+            )
+        )
+    print(
+        "DEBUG POSITION:",
+        symbol,
+        position,
+        "position_held=",
+        position_held,
+        "entry_price=",
+        entry_price,
+    )
+    # --------------------------------------------------------
+    # ANALYSIS LAYER
+    # --------------------------------------------------------
+
+    position = (
+        portfolio_state
+        .get("positions", {})
+        .get(symbol)
+    )
+
+    position_held = (
+        position is not None
+        and float(
+            position.get("quantity", 0)
+        ) > 0
+    )
+
+    entry_price = None
+
+    if position_held:
+        entry_price = float(
+            position.get(
+                "avg_price",
+                0
+            )
+        )
+
+    result = signal_engine.analyze(
+        market_df=market_df,
+        fundamental_df=fundamental_df,
+        symbol=symbol,
+        position_held=position_held,
+        entry_price=entry_price,
+    )
+        # --------------------------------------------------------
     # ANALYSIS LAYER
     # --------------------------------------------------------
 
@@ -1617,8 +1736,9 @@ def build_stock_analysis(
         market_df=market_df,
         fundamental_df=fundamental_df,
         symbol=symbol,
+        position_held=position_held,
+        entry_price=entry_price,
     )
-
     # --------------------------------------------------------
     # CHART
     # --------------------------------------------------------
@@ -3556,15 +3676,22 @@ async def market(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     """
-    Tổng quan VNINDEX.
+    Tổng quan VNINDEX trong khoảng 60 ngày gần nhất.
 
-    VNINDEX được lấy qua VNStock và được quản lý bởi
-    MarketUpdater + MarketCache.
-
-    Không sử dụng DNSE cho /market.
+    VNINDEX được lấy qua:
+        Telegram
+            ↓
+        DataManager.market_manager
+            ↓
+        MarketDataManager
+            ↓
+        VNStock Market.index("VNINDEX").ohlcv()
     """
 
-    print("[MARKET] command received", flush=True)
+    print(
+        "[MARKET] command received",
+        flush=True,
+    )
 
     await update.message.reply_text(
         "📊 Đang lấy dữ liệu thị trường..."
@@ -3572,99 +3699,50 @@ async def market(
 
     try:
         # ----------------------------------------------------
-        # Import cần thiết
+        # Lấy MarketDataManager
         # ----------------------------------------------------
 
-        from data.market_cache import MarketCache
-        from data.market_updater import MarketUpdater
-        from vnstock import stock_historical_data
-
-        # ----------------------------------------------------
-        # Hàm lấy dữ liệu VNINDEX
-        # ----------------------------------------------------
-
-        def fetch_vnindex():
-            end_date = pd.Timestamp.now().strftime(
-                "%Y-%m-%d"
-            )
-
-            start_date = (
-                pd.Timestamp.now()
-                - pd.Timedelta(days=60)
-            ).strftime("%Y-%m-%d")
-
-            print(
-                "[MARKET] fetching VNINDEX from VNStock",
-                flush=True,
-            )
-
-            df = stock_historical_data(
-                "VNINDEX",
-                start_date,
-                end_date,
-                "1D",
-                "index",
-            )
-
-            if df is None:
-                return pd.DataFrame()
-
-            if not isinstance(df, pd.DataFrame):
-                return pd.DataFrame()
-
-            if df.empty:
-                return pd.DataFrame()
-
-            return df
-
-        # ----------------------------------------------------
-        # Tạo Cache + Updater một lần
-        # ----------------------------------------------------
-        #
-        # Dùng attribute của function để giữ cache/updater
-        # giữa các lần gọi /market.
-        #
-        # Không cần sửa thêm code bên ngoài.
-        # ----------------------------------------------------
-
-        if not hasattr(market, "_market_cache"):
-
-            print(
-                "[MARKET] initializing MarketCache",
-                flush=True,
-            )
-
-            market._market_cache = MarketCache()
-
-            market._market_updater = MarketUpdater(
-                cache=market._market_cache,
-                fetch_func=fetch_vnindex,
-                interval_seconds=300,
-            )
-
-        market_cache = market._market_cache
-        market_updater = market._market_updater
-
-        # ----------------------------------------------------
-        # Lấy dữ liệu
-        # ----------------------------------------------------
-
-        print(
-            "[MARKET] updating VNINDEX",
-            flush=True,
+        market_manager = (
+            data_manager.market_manager
         )
 
-        market_df = await asyncio.to_thread(
-            market_updater.update_once
+        # ----------------------------------------------------
+        # Timestamp range
+        # ----------------------------------------------------
+
+        start_timestamp, end_timestamp = (
+            _get_timestamp_range(
+                days=60
+            )
         )
 
         print(
-            "[MARKET] updater returned",
+            "[MARKET] calling MarketDataManager",
             flush=True,
         )
 
         # ----------------------------------------------------
-        # Kiểm tra dữ liệu
+        # Lấy VNINDEX
+        # ----------------------------------------------------
+
+        market_df = await asyncio.wait_for(
+            asyncio.to_thread(
+                market_manager.get_market_data,
+                symbol="VNINDEX",
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+                resolution="1D",
+            ),
+            timeout=30,
+        )
+
+        print(
+            "[MARKET] MarketDataManager returned",
+            flush=True,
+        )
+
+        # ----------------------------------------------------
+        # Validate
         # ----------------------------------------------------
 
         if (
@@ -3680,7 +3758,7 @@ async def market(
             )
 
         # ----------------------------------------------------
-        # Chuẩn hóa thứ tự thời gian
+        # Sort
         # ----------------------------------------------------
 
         if "datetime" in market_df.columns:
@@ -3701,8 +3779,13 @@ async def market(
 
         latest = market_df.iloc[-1]
 
-        close = latest.get("close")
-        volume = latest.get("volume")
+        close = latest.get(
+            "close"
+        )
+
+        volume = latest.get(
+            "volume"
+        )
 
         # ----------------------------------------------------
         # Previous close
@@ -3713,7 +3796,8 @@ async def market(
         if len(market_df) >= 2:
 
             previous_close = (
-                market_df.iloc[-2]
+                market_df
+                .iloc[-2]
                 .get("close")
             )
 
@@ -3724,15 +3808,15 @@ async def market(
         if (
             close is not None
             and previous_close is not None
-            and float(previous_close) != 0
+            and previous_close != 0
         ):
 
             change_pct = (
                 (
-                    float(close)
-                    - float(previous_close)
+                    close
+                    - previous_close
                 )
-                / float(previous_close)
+                / previous_close
                 * 100
             )
 
@@ -3741,7 +3825,7 @@ async def market(
             change_pct = None
 
         # ----------------------------------------------------
-        # Format change
+        # Change text
         # ----------------------------------------------------
 
         if change_pct is None:
@@ -3762,7 +3846,9 @@ async def market(
 
         else:
 
-            change_text = "⚪ 0.00%"
+            change_text = (
+                "⚪ 0.00%"
+            )
 
         # ----------------------------------------------------
         # Latest date
@@ -3774,29 +3860,18 @@ async def market(
 
         if latest_datetime is not None:
 
-            date_text = str(
-                latest_datetime
+            latest_date_text = (
+                pd.Timestamp(
+                    latest_datetime
+                ).strftime(
+                    "%d/%m/%Y"
+                )
             )
 
         else:
 
-            date_text = "N/A"
-
-        # ----------------------------------------------------
-        # Kiểm tra updater có lỗi trước đó không
-        # ----------------------------------------------------
-
-        last_error = (
-            market_updater.get_last_error()
-        )
-
-        cache_note = ""
-
-        if last_error is not None:
-
-            cache_note = (
-                "\n⚠️ DNSE/VNStock cập nhật chậm; "
-                "bot đang sử dụng dữ liệu cache gần nhất."
+            latest_date_text = (
+                "N/A"
             )
 
         # ----------------------------------------------------
@@ -3807,6 +3882,7 @@ async def market(
             "📊 TỔNG QUAN THỊ TRƯỜNG\n\n"
 
             "🇻🇳 VNINDEX\n"
+
             f"• Điểm số: "
             f"{_format_price(close)}\n"
 
@@ -3814,32 +3890,38 @@ async def market(
             f"{change_text}\n"
 
             f"• Khối lượng: "
-            f"{_format_number(volume, 0)}\n"
+            f"{_format_number(volume, 0)}\n\n"
+
+            "📅 Dữ liệu\n"
 
             f"• Phiên gần nhất: "
-            f"{date_text}\n\n"
+            f"{latest_date_text}\n"
 
-            "📅 DỮ LIỆU\n"
             f"• Số phiên: "
-            f"{len(market_df)}\n"
+            f"{len(market_df)}\n\n"
 
-            "• Nguồn: VNStock\n"
-            "• Bộ cập nhật: MarketUpdater\n"
-
-            f"{cache_note}\n\n"
-
-            "💡 VNINDEX được sử dụng để cung cấp "
-            "bối cảnh thị trường; tín hiệu BUY/SELL "
-            "vẫn được xác định riêng theo Strategy 2."
+            "💡 Bot sử dụng VNINDEX "
+            "để cung cấp bối cảnh thị trường; "
+            "tín hiệu BUY/SELL vẫn được xác định "
+            "riêng theo Strategy 2."
         )
 
         await update.message.reply_text(
             message
         )
 
+    except asyncio.TimeoutError:
+
         print(
-            "[MARKET] response sent",
+            "[MARKET ERROR] "
+            "MarketDataManager timeout",
             flush=True,
+        )
+
+        await update.message.reply_text(
+            "⚠️ Dữ liệu VNINDEX đang "
+            "phản hồi chậm.\n\n"
+            "Vui lòng thử lại sau."
         )
 
     except Exception as error:

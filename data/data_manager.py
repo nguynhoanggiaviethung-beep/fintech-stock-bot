@@ -5,6 +5,7 @@ import json
 import pandas as pd
 
 from data.dnse_client import DNSEDataClient
+from data.ssi_client import SSIDataClient
 from data.vnstock_client import VnstockFundamentalClient
 from data.realtime_client import VnstockRealtimeClient
 from data.market_cache import MarketCache
@@ -23,6 +24,7 @@ class DataManager:
 
     def __init__(self):
         self.dnse = DNSEDataClient()
+        self.ssi = SSIDataClient()
         self.vnstock = VnstockFundamentalClient()
         self.realtime = VnstockRealtimeClient()
         self.market_manager = MarketDataManager()
@@ -121,182 +123,75 @@ class DataManager:
         resolution: str = "1D",
     ) -> pd.DataFrame:
         """
-        Lấy dữ liệu OHLCV lịch sử.
+        Lấy dữ liệu OHLCV lịch sử cổ phiếu từ SSI iBoard.
 
-        Primary:
-            VNStock
+        SSI:
+            Historical stock OHLCV
 
-        Fallback:
-            DNSE
+        VNStock:
+            Fundamental data
 
-        Backtest sẽ ưu tiên VNStock để tránh phụ thuộc
-        vào DNSE khi API DNSE timeout/rate-limit.
+        VNStock Quote:
+            Realtime trade
         """
 
         symbol = symbol.upper().strip()
 
         if not symbol:
-            raise ValueError("symbol không được để trống")
+            raise ValueError(
+                "symbol không được để trống"
+            )
 
-        # ========================================================
-        # PRIMARY: VNSTOCK
-        # ========================================================
+        if resolution != "1D":
+            raise ValueError(
+                "SSI historical hiện chỉ được "
+                "sử dụng với resolution=1D."
+            )
 
-        try:
-            from vnstock import stock_historical_data
-
-            start_date = pd.to_datetime(
+        start_date = (
+            pd.to_datetime(
                 start_timestamp,
                 unit="s",
                 utc=True,
-            ).strftime("%Y-%m-%d")
+            )
+            .tz_convert("Asia/Ho_Chi_Minh")
+            .strftime("%d/%m/%Y")
+        )
 
-            end_date = pd.to_datetime(
+        end_date = (
+            pd.to_datetime(
                 end_timestamp,
                 unit="s",
                 utc=True,
-            ).strftime("%Y-%m-%d")
-
-            print(
-                f"[DATA MANAGER] "
-                f"Historical {symbol}: "
-                f"đang lấy từ VNStock "
-                f"{start_date} -> {end_date}",
-                flush=True,
             )
-
-            df = stock_historical_data(
-                symbol=symbol,
-                start_date=start_date,
-                end_date=end_date,
-                resolution=resolution,
-                type="stock",
-            )
-
-            if (
-                isinstance(df, pd.DataFrame)
-                and not df.empty
-            ):
-                df = df.copy()
-
-                # VNStock có thể trả time hoặc datetime
-                if "time" in df.columns:
-                    df = df.rename(
-                        columns={
-                            "time": "datetime"
-                        }
-                    )
-
-                if "datetime" not in df.columns:
-                    raise ValueError(
-                        "VNStock không trả về cột datetime."
-                    )
-
-                df["datetime"] = pd.to_datetime(
-                    df["datetime"]
-                )
-
-                df["timestamp"] = (
-                    df["datetime"]
-                    .astype("int64")
-                    // 10**9
-                )
-
-                df.insert(
-                    0,
-                    "symbol",
-                    symbol,
-                )
-
-                required_columns = [
-                    "symbol",
-                    "timestamp",
-                    "datetime",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "volume",
-                ]
-
-                missing_columns = [
-                    column
-                    for column in required_columns
-                    if column not in df.columns
-                ]
-
-                if missing_columns:
-                    raise ValueError(
-                        "VNStock thiếu cột: "
-                        + ", ".join(
-                            missing_columns
-                        )
-                    )
-
-                df = df[
-                    required_columns
-                ].reset_index(drop=True)
-
-                print(
-                    f"[DATA MANAGER] "
-                    f"Historical {symbol}: "
-                    f"VNStock OK "
-                    f"({len(df)} rows)",
-                    flush=True,
-                )
-
-                return df
-
-            raise ValueError(
-                f"VNStock không trả dữ liệu "
-                f"historical cho {symbol}."
-            )
-
-        except Exception as vnstock_error:
-
-            print(
-                f"[DATA MANAGER WARNING] "
-                f"VNStock historical {symbol} lỗi: "
-                f"{vnstock_error}",
-                flush=True,
-            )
-
-        # ========================================================
-        # FALLBACK: DNSE
-        # ========================================================
+            .tz_convert("Asia/Ho_Chi_Minh")
+            .strftime("%d/%m/%Y")
+        )
 
         print(
             f"[DATA MANAGER] "
             f"Historical {symbol}: "
-            f"fallback sang DNSE...",
+            f"dùng SSI "
+            f"{start_date} -> {end_date}",
             flush=True,
         )
 
-        response_text = (
-            self.dnse.get_historical_ohlcv(
-                symbol=symbol,
-                start_timestamp=start_timestamp,
-                end_timestamp=end_timestamp,
-                resolution=resolution,
-            )
+        df = self.ssi.get_historical_ohlcv(
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
         )
 
-        df = self._parse_dnse_ohlcv(
-            response_text
-        )
-
-        if not df.empty:
-            df.insert(
-                0,
-                "symbol",
-                symbol,
+        if df.empty:
+            raise ValueError(
+                f"SSI không trả dữ liệu "
+                f"historical cho {symbol}."
             )
 
         print(
             f"[DATA MANAGER] "
             f"Historical {symbol}: "
-            f"DNSE fallback OK "
-            f"({len(df)} rows)",
+            f"SSI OK ({len(df)} rows)",
             flush=True,
         )
 
@@ -521,8 +416,8 @@ class MarketDataManager:
 
 
     # ============================================================
-    # GENERIC MARKET DATA
-    # ============================================================
+# GENERIC MARKET DATA
+# ============================================================
 
     def get_market_data(
         self,
@@ -535,28 +430,58 @@ class MarketDataManager:
         """
         Lấy dữ liệu thị trường.
 
-        Nếu symbol là VNINDEX thì lấy dữ liệu Index từ DNSE.
-        Nếu symbol là mã cổ phiếu thì lấy dữ liệu Stock từ DNSE.
+        - VNINDEX: lấy dữ liệu Index từ VNStock Market.
+        - Mã cổ phiếu: lấy dữ liệu historical từ SSI.
         """
 
         symbol = symbol.upper().strip()
 
         if not symbol:
-            raise ValueError("symbol không được để trống")
+            raise ValueError(
+                "symbol không được để trống"
+            )
 
-        if start_timestamp is not None and end_timestamp is not None:
+        # ========================================================
+        # VNINDEX + khoảng thời gian cụ thể
+        # ========================================================
+
+        if (
+            start_timestamp is not None
+            and end_timestamp is not None
+        ):
+
             if symbol == "VNINDEX":
+
+                if resolution != "1D":
+                    raise ValueError(
+                        "VNINDEX hiện chỉ hỗ trợ resolution=1D."
+                    )
+
                 start_date = pd.to_datetime(
-                    start_timestamp, unit="s"
+                    start_timestamp,
+                    unit="s",
                 ).strftime("%Y-%m-%d")
 
                 end_date = pd.to_datetime(
-                    end_timestamp, unit="s"
+                    end_timestamp,
+                    unit="s",
                 ).strftime("%Y-%m-%d")
 
-                df = self.vnstock_market.index(symbol).ohlcv(
+                print(
+                    "[MARKET MANAGER] "
+                    f"VNINDEX: VNStock "
+                    f"{start_date} -> {end_date}",
+                    flush=True,
+                )
+
+                market = self.vnstock_market.index(
+                    symbol
+                )
+
+                df = market.ohlcv(
                     start=start_date,
                     end=end_date,
+                    interval="1D",
                 )
 
                 if df is None or df.empty:
@@ -574,12 +499,73 @@ class MarketDataManager:
                     )
 
                 df = df.copy()
-                df = df.rename(columns={"time": "datetime"})
-                df["datetime"] = pd.to_datetime(df["datetime"])
-                df["timestamp"] = (
-                    df["datetime"].astype("int64") // 10**9
+
+                if "time" in df.columns:
+                    df = df.rename(
+                        columns={
+                            "time": "datetime"
+                        }
+                    )
+
+                required_columns = [
+                    "datetime",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                ]
+
+                missing_columns = [
+                    column
+                    for column in required_columns
+                    if column not in df.columns
+                ]
+
+                if missing_columns:
+                    raise ValueError(
+                        "VNStock VNINDEX thiếu cột: "
+                        + ", ".join(
+                            missing_columns
+                        )
+                    )
+
+                df["datetime"] = pd.to_datetime(
+                    df["datetime"]
                 )
-                df.insert(0, "symbol", symbol)
+
+                numeric_columns = [
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                ]
+
+                for column in numeric_columns:
+                    df[column] = pd.to_numeric(
+                        df[column],
+                        errors="coerce",
+                    )
+
+                df = df.dropna(
+                    subset=[
+                        "datetime",
+                        *numeric_columns,
+                    ]
+                )
+
+                df["timestamp"] = (
+                    df["datetime"]
+                    .astype("int64")
+                    // 10**9
+                )
+
+                df.insert(
+                    0,
+                    "symbol",
+                    symbol,
+                )
 
                 df = df[
                     [
@@ -592,27 +578,51 @@ class MarketDataManager:
                         "close",
                         "volume",
                     ]
-                ].reset_index(drop=True)
+                ].sort_values(
+                    "datetime"
+                ).reset_index(
+                    drop=True
+                )
 
                 self.cache.set(df)
 
-                return df
-
-            else:
-                response_text = self.dnse.get_historical_ohlcv(
-                    symbol=symbol,
-                    start_timestamp=start_timestamp,
-                    end_timestamp=end_timestamp,
-                    resolution=resolution,
+                print(
+                    "[MARKET MANAGER] "
+                    f"VNINDEX: nhận {len(df)} phiên",
+                    flush=True,
                 )
 
-                return DataManager._parse_dnse_ohlcv(response_text)
+                return df
 
-        # Nếu không truyền timestamp thì lấy theo số ngày
-        return self.get_historical_index(
-            index_symbol=symbol,
-            days=days,
-        ) if symbol == "VNINDEX" else self._get_stock_history(
+            # ====================================================
+            # Cổ phiếu + khoảng thời gian cụ thể
+            # ====================================================
+
+            return self._get_stock_history(
+                symbol=symbol,
+                days=max(
+                    1,
+                    int(
+                        (
+                            end_timestamp
+                            - start_timestamp
+                        ) / 86400
+                    ),
+                ),
+                resolution=resolution,
+            )
+
+        # ========================================================
+        # Không truyền timestamp
+        # ========================================================
+
+        if symbol == "VNINDEX":
+            return self.get_historical_index(
+                index_symbol=symbol,
+                days=days,
+            )
+
+        return self._get_stock_history(
             symbol=symbol,
             days=days,
             resolution=resolution,
@@ -633,177 +643,190 @@ class MarketDataManager:
         resolution: str = "1D",
     ) -> pd.DataFrame:
         """
-        Lấy dữ liệu lịch sử cổ phiếu.
+        Lấy dữ liệu lịch sử cổ phiếu từ SSI iBoard.
 
-        Primary:
-            VNStock
+        SSI:
+            Historical stock OHLCV
 
-        Fallback:
-            DNSE
-
-        Mục tiêu:
-            - Ưu tiên nguồn VNStock vì ổn định hơn trong project hiện tại.
-            - Chỉ gọi DNSE khi VNStock lỗi hoặc không trả dữ liệu hợp lệ.
-            - Giữ nguyên format DataFrame mà các module phía trên đang sử dụng.
+        Dữ liệu trả về được chuẩn hóa về format:
+            symbol
+            timestamp
+            datetime
+            open
+            high
+            low
+            close
+            volume
         """
 
         if days <= 0:
-            raise ValueError("days phải lớn hơn 0")
+            raise ValueError(
+                "days phải lớn hơn 0"
+            )
+
+        if resolution != "1D":
+            raise ValueError(
+                "SSI historical hiện chỉ hỗ trợ "
+                "resolution=1D."
+            )
 
         symbol = symbol.upper().strip()
 
         if not symbol:
-            raise ValueError("symbol không được để trống")
-
-        # ========================================================
-        # PRIMARY: VNSTOCK
-        # ========================================================
-
-        try:
-            from vnstock import stock_historical_data
-
-            end_date = pd.Timestamp.now().strftime("%Y-%m-%d")
-
-            start_date = (
-                pd.Timestamp.now()
-                - pd.Timedelta(days=days)
-            ).strftime("%Y-%m-%d")
-
-            df = stock_historical_data(
-                symbol=symbol,
-                start_date=start_date,
-                end_date=end_date,
-                resolution=resolution,
-                type="stock",
-            )
-
-            if (
-                isinstance(df, pd.DataFrame)
-                and not df.empty
-            ):
-                df = df.copy()
-
-                # VNStock thường trả datetime/time.
-                if "time" in df.columns:
-                    df = df.rename(
-                        columns={"time": "datetime"}
-                    )
-
-                if "datetime" not in df.columns:
-                    raise ValueError(
-                        "VNStock không trả về cột datetime."
-                    )
-
-                df["datetime"] = pd.to_datetime(
-                    df["datetime"]
-                )
-
-                df["timestamp"] = (
-                    df["datetime"]
-                    .astype("int64")
-                    // 10**9
-                )
-
-                df.insert(
-                    0,
-                    "symbol",
-                    symbol,
-                )
-
-                required_columns = [
-                    "symbol",
-                    "timestamp",
-                    "datetime",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "volume",
-                ]
-
-                missing_columns = [
-                    col
-                    for col in required_columns
-                    if col not in df.columns
-                ]
-
-                if missing_columns:
-                    raise ValueError(
-                        "VNStock thiếu các cột: "
-                        + ", ".join(missing_columns)
-                    )
-
-                df = df[
-                    required_columns
-                ].reset_index(drop=True)
-
-                self.cache.set(df)
-
-                print(
-                    f"[DATA MANAGER] "
-                    f"Historical {symbol}: "
-                    f"dùng VNStock ({len(df)} rows)"
-                )
-
-                return df
-
             raise ValueError(
-                f"VNStock không trả dữ liệu historical cho {symbol}."
-            )
-
-        except Exception as vnstock_error:
-
-            print(
-                f"[DATA MANAGER WARNING] "
-                f"VNStock historical {symbol} lỗi: "
-                f"{vnstock_error}"
+                "symbol không được để trống"
             )
 
         # ========================================================
-        # FALLBACK: DNSE
+        # TÍNH KHOẢNG NGÀY
         # ========================================================
+
+        end_date = pd.Timestamp.now(
+            tz="Asia/Ho_Chi_Minh"
+        )
+
+        start_date = (
+            end_date
+            - pd.Timedelta(days=days)
+        )
+
+        start_date_str = start_date.strftime(
+            "%d/%m/%Y"
+        )
+
+        end_date_str = end_date.strftime(
+            "%d/%m/%Y"
+        )
 
         print(
             f"[DATA MANAGER] "
             f"Historical {symbol}: "
-            f"fallback sang DNSE..."
+            f"dùng SSI "
+            f"{start_date_str} -> {end_date_str}",
+            flush=True,
         )
 
-        now_utc = pd.Timestamp.now(tz="UTC")
+        # ========================================================
+        # GỌI SSI
+        # ========================================================
 
-        end_timestamp = int(
-            now_utc.timestamp()
-        )
-
-        start_timestamp = int(
-            (
-                now_utc
-                - pd.Timedelta(days=days)
-            ).timestamp()
-        )
-
-        response_text = self.dnse.get_historical_ohlcv(
+        df = self.ssi.get_historical_ohlcv(
             symbol=symbol,
-            start_timestamp=start_timestamp,
-            end_timestamp=end_timestamp,
-            resolution=resolution,
+            start_date=start_date_str,
+            end_date=end_date_str,
         )
 
-        df = DataManager._parse_dnse_ohlcv(
-            response_text
-        )
-
-        if not df.empty:
-            df.insert(
-                0,
-                "symbol",
-                symbol,
+        if df is None or df.empty:
+            raise ValueError(
+                f"SSI không trả dữ liệu historical "
+                f"cho {symbol}."
             )
+
+        # ========================================================
+        # KIỂM TRA CỘT
+        # ========================================================
+
+        required_columns = [
+            "symbol",
+            "timestamp",
+            "datetime",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+        ]
+
+        missing_columns = [
+            column
+            for column in required_columns
+            if column not in df.columns
+        ]
+
+        if missing_columns:
+            raise ValueError(
+                "SSI thiếu các cột: "
+                + ", ".join(missing_columns)
+            )
+
+        # ========================================================
+        # CHUẨN HÓA
+        # ========================================================
+
+        df = df[
+            required_columns
+        ].copy()
+
+        df["symbol"] = (
+            df["symbol"]
+            .fillna(symbol)
+            .astype(str)
+            .str.upper()
+        )
+
+        df["datetime"] = pd.to_datetime(
+            df["datetime"]
+        )
+
+        numeric_columns = [
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+        ]
+
+        for column in numeric_columns:
+            df[column] = pd.to_numeric(
+                df[column],
+                errors="coerce",
+            )
+
+        df = df.dropna(
+            subset=[
+                "timestamp",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+            ]
+        )
+
+        df = (
+            df
+            .sort_values("datetime")
+            .drop_duplicates(
+                subset=[
+                    "symbol",
+                    "datetime",
+                ],
+                keep="last",
+            )
+            .reset_index(drop=True)
+        )
+
+        if df.empty:
+            raise ValueError(
+                f"SSI không còn dữ liệu hợp lệ "
+                f"sau khi chuẩn hóa {symbol}."
+            )
+
+        # ========================================================
+        # CACHE
+        # ========================================================
 
         self.cache.set(df)
 
-        return df
+        print(
+            f"[DATA MANAGER] "
+            f"Historical {symbol}: "
+            f"SSI OK ({len(df)} rows)",
+            flush=True,
+        )
 
+        return df
     # ============================================================
     # VN-INDEX
     # ============================================================

@@ -5,7 +5,9 @@ from typing import Optional
 
 import pandas as pd
 
-from .dnse_client import DNSEDataClient
+from vnstock import Listing
+
+from data.ssi_client import SSIDataClient
 
 
 class MarketScanner:
@@ -26,16 +28,18 @@ class MarketScanner:
     """
 
     MARKET_MAP = {
-        "STO": "HOSE",
-        "STX": "HNX",
-        "UPX": "UPCoM",
+        "HOSE": "HOSE",
+        "HNX": "HNX",
+        "UPCOM": "UPCoM",
+        "UPCOM": "UPCoM",
     }
 
     def __init__(
         self,
         request_delay: float = 0.15,
     ):
-        self.dnse = DNSEDataClient()
+        self.listing = Listing()
+        self.ssi = SSIDataClient()
         self.request_delay = request_delay
 
     # ========================================================
@@ -44,123 +48,119 @@ class MarketScanner:
 
     def get_stock_universe(self) -> pd.DataFrame:
         """
-        Lấy toàn bộ danh sách cổ phiếu từ DNSE.
+        Lấy danh sách toàn bộ mã cổ phiếu từ VNStock Listing.
 
-        DNSE giới hạn tối đa 1000 instruments mỗi request,
-        nên sử dụng pagination bằng offset.
+        VNStock trả về các cột:
+            symbol
+            organ_name
+            en_organ_name
+            exchange
+            type
+            ...
 
-        Chỉ giữ securityGroupId = ST.
+        Chỉ giữ:
+            symbol
+            market
         """
 
-        import json
+        # ----------------------------------------------------
+        # VNStock all_symbols() hiện chỉ trả symbol + organ_name
+        # nên dùng symbols_by_exchange() để lấy exchange.
+        # ----------------------------------------------------
 
-        all_items = []
+        df = self.listing.symbols_by_exchange(
+            "HOSE"
+        )
 
-        limit = 1000
-        offset = 0
-
-        while True:
-
-            result = self.dnse.client._request(
-                "GET",
-                "/market/instruments",
-                query={
-                    "securityGroupId": "ST",
-                    "limit": limit,
-                    "offset": offset,
-                },
-            )
-
-            status_code, response_text = result
-
-            if status_code != 200:
-                raise RuntimeError(
-                    f"DNSE instruments API error: "
-                    f"{status_code} - {response_text}"
-                )
-
-            data = response_text
-
-            if isinstance(data, str):
-                data = json.loads(data)
-
-            if isinstance(data, dict):
-                items = (
-                    data.get("data")
-                    or data.get("items")
-                    or data.get("instruments")
-                    or []
-                )
-            elif isinstance(data, list):
-                items = data
-            else:
-                items = []
-
-            if not items:
-                break
-
-            all_items.extend(items)
-
-            # Nếu số lượng trả về nhỏ hơn limit,
-            # nghĩa là đã tới trang cuối.
-            if len(items) < limit:
-                break
-
-            offset += limit
-
-        if not all_items:
+        if df is None or df.empty:
             raise ValueError(
-                "DNSE không trả về danh sách cổ phiếu."
+                "VNStock không trả về danh sách cổ phiếu."
             )
 
-        rows = []
-
-        for item in all_items:
-
-            if not isinstance(item, dict):
-                continue
-
-            symbol = item.get("symbol")
-
-            if not symbol:
-                continue
-
-            security_group = item.get(
-                "securityGroupId"
-            )
-
-            if security_group != "ST":
-                continue
-
-            market_id = item.get("marketId")
-
-            rows.append(
-                {
-                    "symbol": str(symbol).upper(),
-                    "market_id": market_id,
-                    "market": self.MARKET_MAP.get(
-                        market_id,
-                        market_id,
-                    ),
-                }
-            )
-
-        df = pd.DataFrame(rows)
-
-        if df.empty:
+        if "symbol" not in df.columns:
             raise ValueError(
-                "Không tìm thấy cổ phiếu thuộc nhóm ST."
+                "VNStock listing thiếu cột symbol."
             )
+
+        if "exchange" not in df.columns:
+            raise ValueError(
+                "VNStock listing thiếu cột exchange."
+            )
+
+        df = df.copy()
+
+        # ----------------------------------------------------
+        # Chuẩn hóa symbol
+        # ----------------------------------------------------
+
+        df["symbol"] = (
+            df["symbol"]
+            .astype(str)
+            .str.upper()
+            .str.strip()
+        )
+
+        # ----------------------------------------------------
+        # Chuẩn hóa exchange
+        # ----------------------------------------------------
+
+        df["exchange"] = (
+            df["exchange"]
+            .astype(str)
+            .str.upper()
+            .str.strip()
+        )
+
+        # ----------------------------------------------------
+        # Chỉ giữ cổ phiếu hợp lệ
+        # ----------------------------------------------------
+
+        df = df[
+            df["symbol"].notna()
+            & (df["symbol"] != "")
+        ]
+
+        # ----------------------------------------------------
+        # Chuyển exchange -> market
+        # ----------------------------------------------------
+
+        df["market"] = (
+            df["exchange"]
+            .map(self.MARKET_MAP)
+        )
+
+        # ----------------------------------------------------
+        # Loại những mã không xác định được sàn
+        # ----------------------------------------------------
+
+        df = df[
+            df["market"].notna()
+        ]
+
+        # ----------------------------------------------------
+        # Chỉ giữ symbol + market
+        # ----------------------------------------------------
 
         df = (
-            df.drop_duplicates(
+            df[
+                [
+                    "symbol",
+                    "market",
+                ]
+            ]
+            .drop_duplicates(
                 subset=["symbol"]
             )
             .sort_values(
-                ["market", "symbol"]
+                "symbol"
             )
             .reset_index(drop=True)
         )
+
+        if df.empty:
+            raise ValueError(
+                "Không tìm thấy mã cổ phiếu hợp lệ."
+            )
 
         return df
 
@@ -174,7 +174,8 @@ class MarketScanner:
         days: int = 5,
     ) -> pd.DataFrame:
         """
-        Lấy dữ liệu OHLCV gần nhất của một mã.
+        Lấy dữ liệu OHLCV gần nhất của một mã
+        từ SSI iBoard.
         """
 
         end_timestamp = int(
@@ -186,160 +187,38 @@ class MarketScanner:
             - days * 24 * 60 * 60
         )
 
-        response_text = (
-            self.dnse.get_historical_ohlcv(
-                symbol=symbol,
-                start_timestamp=start_timestamp,
-                end_timestamp=end_timestamp,
-                resolution="1D",
+        start_date = (
+            pd.to_datetime(
+                start_timestamp,
+                unit="s",
+                utc=True,
             )
+            .tz_convert(
+                "Asia/Ho_Chi_Minh"
+            )
+            .strftime("%d/%m/%Y")
         )
 
-        return self._parse_ohlcv(
-            response_text
+        end_date = (
+            pd.to_datetime(
+                end_timestamp,
+                unit="s",
+                utc=True,
+            )
+            .tz_convert(
+                "Asia/Ho_Chi_Minh"
+            )
+            .strftime("%d/%m/%Y")
         )
 
-    # ========================================================
-    # Parse OHLCV
-    # ========================================================
-
-    @staticmethod
-    def _parse_ohlcv(
-        response_text,
-    ) -> pd.DataFrame:
-
-        import json
-
-        if isinstance(response_text, str):
-            response_text = json.loads(
-                response_text
-            )
-
-        if isinstance(response_text, dict):
-            data = (
-                response_text.get("data")
-                or response_text.get("items")
-                or response_text
-            )
-        else:
-            data = response_text
-
-        if isinstance(data, dict):
-            timestamps = (
-                data.get("t")
-                or data.get("timestamp")
-                or []
-            )
-
-            opens = (
-                data.get("o")
-                or data.get("open")
-                or []
-            )
-
-            highs = (
-                data.get("h")
-                or data.get("high")
-                or []
-            )
-
-            lows = (
-                data.get("l")
-                or data.get("low")
-                or []
-            )
-
-            closes = (
-                data.get("c")
-                or data.get("close")
-                or []
-            )
-
-            volumes = (
-                data.get("v")
-                or data.get("volume")
-                or []
-            )
-
-            df = pd.DataFrame(
-                {
-                    "timestamp": timestamps,
-                    "open": opens,
-                    "high": highs,
-                    "low": lows,
-                    "close": closes,
-                    "volume": volumes,
-                }
-            )
-
-        elif isinstance(data, list):
-
-            df = pd.DataFrame(data)
-
-            rename_map = {
-                "t": "timestamp",
-                "o": "open",
-                "h": "high",
-                "l": "low",
-                "c": "close",
-                "v": "volume",
-            }
-
-            df = df.rename(
-                columns=rename_map
-            )
-
-        else:
-            return pd.DataFrame()
-
-        required_columns = [
-            "timestamp",
-            "close",
-            "volume",
-        ]
-
-        for column in required_columns:
-            if column not in df.columns:
-                return pd.DataFrame()
-
-        df["timestamp"] = pd.to_numeric(
-            df["timestamp"],
-            errors="coerce",
-        )
-
-        df["close"] = pd.to_numeric(
-            df["close"],
-            errors="coerce",
-        )
-
-        df["volume"] = pd.to_numeric(
-            df["volume"],
-            errors="coerce",
-        )
-
-        df = df.dropna(
-            subset=[
-                "timestamp",
-                "close",
-            ]
+        df = self.ssi.get_historical_ohlcv(
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
         )
 
         if df.empty:
-            return df
-
-        df["datetime"] = pd.to_datetime(
-            df["timestamp"],
-            unit="s",
-            utc=True,
-        ).dt.tz_convert(
-            "Asia/Ho_Chi_Minh"
-        )
-
-        df = df.sort_values(
-            "datetime"
-        ).reset_index(
-            drop=True
-        )
+            return pd.DataFrame()
 
         return df
 
