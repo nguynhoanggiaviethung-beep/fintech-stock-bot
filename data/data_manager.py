@@ -7,6 +7,8 @@ import pandas as pd
 from data.dnse_client import DNSEDataClient
 from data.vnstock_client import VnstockFundamentalClient
 from data.realtime_client import VnstockRealtimeClient
+from data.market_cache import MarketCache
+from vnstock import Market
 
 
 class DataManager:
@@ -355,6 +357,9 @@ class MarketDataManager:
         self.dnse = DNSEDataClient()
         self.vnstock_client = VnstockFundamentalClient()
         self.realtime_client = VnstockRealtimeClient()
+        self.vnstock_market = Market()
+        self.cache = MarketCache()
+
 
     # ============================================================
     # GENERIC MARKET DATA
@@ -380,16 +385,60 @@ class MarketDataManager:
         if not symbol:
             raise ValueError("symbol không được để trống")
 
-        # Nếu caller truyền timestamp thì dùng trực tiếp
         if start_timestamp is not None and end_timestamp is not None:
-
             if symbol == "VNINDEX":
-                response_text = self.dnse.get_historical_index(
-                    index_symbol=symbol,
-                    start_timestamp=start_timestamp,
-                    end_timestamp=end_timestamp,
-                    resolution=resolution,
+                start_date = pd.to_datetime(
+                    start_timestamp, unit="s"
+                ).strftime("%Y-%m-%d")
+
+                end_date = pd.to_datetime(
+                    end_timestamp, unit="s"
+                ).strftime("%Y-%m-%d")
+
+                df = self.vnstock_market.index(symbol).ohlcv(
+                    start=start_date,
+                    end=end_date,
                 )
+
+                if df is None or df.empty:
+                    return pd.DataFrame(
+                        columns=[
+                            "symbol",
+                            "timestamp",
+                            "datetime",
+                            "open",
+                            "high",
+                            "low",
+                            "close",
+                            "volume",
+                        ]
+                    )
+
+                df = df.copy()
+                df = df.rename(columns={"time": "datetime"})
+                df["datetime"] = pd.to_datetime(df["datetime"])
+                df["timestamp"] = (
+                    df["datetime"].astype("int64") // 10**9
+                )
+                df.insert(0, "symbol", symbol)
+
+                df = df[
+                    [
+                        "symbol",
+                        "timestamp",
+                        "datetime",
+                        "open",
+                        "high",
+                        "low",
+                        "close",
+                        "volume",
+                    ]
+                ].reset_index(drop=True)
+
+                self.cache.set(df)
+
+                return df
+
             else:
                 response_text = self.dnse.get_historical_ohlcv(
                     symbol=symbol,
@@ -398,9 +447,7 @@ class MarketDataManager:
                     resolution=resolution,
                 )
 
-            return DataManager._parse_dnse_ohlcv(
-                response_text
-            )
+                return DataManager._parse_dnse_ohlcv(response_text)
 
         # Nếu không truyền timestamp thì lấy theo số ngày
         return self.get_historical_index(

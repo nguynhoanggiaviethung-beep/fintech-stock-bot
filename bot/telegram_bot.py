@@ -11,7 +11,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
 )
-
+from data.market_updater import MarketUpdater
 from data.data_manager import DataManager
 from analysis.signal_engine import SignalEngine
 from analysis.chart_engine import ChartEngine
@@ -33,6 +33,14 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 # ============================================================
 
 data_manager = DataManager()
+market_updater = MarketUpdater(
+    cache=data_manager.market_manager.cache,
+    fetch_func=lambda: data_manager.market_manager.get_market_data(
+        symbol="VNINDEX",
+        days=60,
+    ),
+    interval_seconds=300,
+)
 signal_engine = SignalEngine()
 chart_engine = ChartEngine()
 
@@ -789,6 +797,7 @@ async def _post_init(
         f"Portfolio loaded: "
         f"{len(portfolio_state['positions'])} positions"
     )
+    
 
 async def _post_shutdown(
     application,
@@ -1109,91 +1118,47 @@ async def remove_position(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    """
-    /remove FPT 500
-    """
-
+    """/remove FPT 500"""
     if len(context.args) != 2:
-        await update.message.reply_text(
-            "❌ Cú pháp:\n"
-            "/remove FPT 500"
-        )
+        await update.message.reply_text("❌ Cú pháp:\n/remove FPT 500")
         return
 
-    symbol = (
-        context.args[0]
-        .upper()
-        .strip()
-    )
+    symbol = context.args[0].upper().strip()
 
     try:
-        quantity = float(
-            context.args[1]
-        )
-
+        quantity = float(context.args[1])
     except ValueError:
-        await update.message.reply_text(
-            "❌ Số lượng không hợp lệ."
-        )
+        await update.message.reply_text("❌ Số lượng không hợp lệ.")
         return
 
-    positions = portfolio_state[
-        "positions"
-    ]
+    positions = portfolio_state["positions"]
 
     if symbol not in positions:
-        await update.message.reply_text(
-            f"ℹ️ Không có vị thế {symbol}."
-        )
+        await update.message.reply_text(f"ℹ️ Không có vị thế {symbol}.")
         return
 
     if quantity <= 0:
-        await update.message.reply_text(
-            "❌ Số lượng phải lớn hơn 0."
-        )
+        await update.message.reply_text("❌ Số lượng phải lớn hơn 0.")
         return
 
-    current_quantity = float(
-        positions[symbol].get(
-            "quantity",
-            0,
-        )
-    )
+    current_quantity = float(positions[symbol].get("quantity", 0))
 
+    # --- SỬA TỪ ĐOẠN NÀY ---
     if quantity >= current_quantity:
-
-        positions.pop(
-            symbol
-        )
-
-        message = (
-            "🗑️ ĐÃ XÓA VỊ THẾ\n\n"
-            f"• Mã: {symbol}"
-        )
-
+        positions.pop(symbol)
+        message = f"🗑️ ĐÃ XÓA VỊ THẾ\n\n• Mã: {symbol}"
     else:
-
-        positions[symbol][
-            "quantity"
-        ] = (
-            current_quantity
-            - quantity
-        )
-
+        positions[symbol]["quantity"] = current_quantity - quantity
         message = (
             "💼 ĐÃ GIẢM VỊ THẾ\n\n"
             f"• Mã: {symbol}\n"
-            f"• Số lượng bán: "
-            f"{_format_number(quantity, 0)}\n"
-            f"• Còn lại: "
-            f"{_format_number(current_quantity - quantity, 0)}"
+            f"• Số lượng bán: {_format_number(quantity, 0)}\n"
+            f"• Còn lại: {_format_number(current_quantity - quantity, 0)}"
         )
 
     _save_portfolio()
 
-    await update.message.reply_text(
-        message
-    )
+    await update.message.reply_text(message)
 
 # ============================================================
 # PORTFOLIO HELPERS
@@ -3404,7 +3369,13 @@ async def market(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     """
-    Tổng quan VNINDEX trong khoảng 30 phiên gần nhất.
+    Tổng quan VNINDEX.
+
+    Nguồn dữ liệu:
+        - VNStock: dữ liệu VNINDEX
+        - market_updater.py: cập nhật + cache dữ liệu
+
+    Không sử dụng DNSE cho VNINDEX.
     """
 
     print("[MARKET] command received", flush=True)
@@ -3414,91 +3385,182 @@ async def market(
     )
 
     try:
-        start_timestamp, end_timestamp = (
-            _get_timestamp_range(
-                days=60
-            )
+        # ----------------------------------------------------
+        # MARKET UPDATER
+        # ----------------------------------------------------
+
+        from data.market_updater import MarketUpdater
+
+        updater = MarketUpdater()
+
+        print(
+            "[MARKET] using market_updater",
+            flush=True,
         )
 
-        # DataManager hiện có lớp quản lý VNINDEX.
-        market_manager = data_manager.market_manager
+        # ----------------------------------------------------
+        # Lấy dữ liệu VNINDEX
+        # ----------------------------------------------------
 
-        print("[MARKET] calling DNSE", flush=True)
+        market_df = await asyncio.to_thread(
+            updater.get_vnindex,
+        )
 
-        try:
-            market_df = await asyncio.wait_for(
-                asyncio.to_thread(
-                    market_manager.get_market_data,
-                    symbol="VNINDEX",
-                    start_timestamp=start_timestamp,
-                    end_timestamp=end_timestamp,
-                ),
-                timeout=15,
-            )
+        print(
+            "[MARKET] market_updater returned",
+            flush=True,
+        )
 
-        except asyncio.TimeoutError:
-            print(
-                "[MARKET] DNSE timeout after 15 seconds",
-                flush=True,
-            )
+        # ----------------------------------------------------
+        # Kiểm tra dữ liệu
+        # ----------------------------------------------------
 
-            await update.message.reply_text(
-                "⚠️ Dữ liệu VNINDEX đang phản hồi chậm.\n\n"
-                "DNSE không trả dữ liệu trong 15 giây. "
-                "Vui lòng thử lại sau."
-            )
-            return
-
-        print("[MARKET] DNSE returned", flush=True)
-
-        if market_df is None or market_df.empty:
+        if (
+            market_df is None
+            or market_df.empty
+        ):
             raise ValueError(
                 "Không có dữ liệu VNINDEX."
             )
 
+        # ----------------------------------------------------
+        # Sắp xếp theo thời gian
+        # ----------------------------------------------------
+
+        if "datetime" in market_df.columns:
+
+            market_df = (
+                market_df
+                .sort_values(
+                    "datetime"
+                )
+                .reset_index(
+                    drop=True
+                )
+            )
+
+        # ----------------------------------------------------
+        # Latest
+        # ----------------------------------------------------
+
         latest = market_df.iloc[-1]
 
-        close = latest.get("close")
-        volume = latest.get("volume")
+        close = latest.get(
+            "close"
+        )
+
+        volume = latest.get(
+            "volume"
+        )
+
+        # ----------------------------------------------------
+        # Previous close
+        # ----------------------------------------------------
 
         previous_close = None
 
         if len(market_df) >= 2:
-            previous_close = market_df.iloc[-2].get(
-                "close"
+
+            previous_close = (
+                market_df.iloc[-2]
+                .get("close")
             )
+
+        # ----------------------------------------------------
+        # Change %
+        # ----------------------------------------------------
 
         if (
             close is not None
             and previous_close is not None
             and previous_close != 0
         ):
+
             change_pct = (
-                (close - previous_close)
-                / previous_close
+                (
+                    float(close)
+                    - float(previous_close)
+                )
+                / float(previous_close)
                 * 100
             )
+
         else:
+
             change_pct = None
 
+        # ----------------------------------------------------
+        # Format change
+        # ----------------------------------------------------
+
         if change_pct is None:
+
             change_text = "N/A"
+
         elif change_pct > 0:
-            change_text = f"🟢 +{change_pct:.2f}%"
+
+            change_text = (
+                f"🟢 +{change_pct:.2f}%"
+            )
+
         elif change_pct < 0:
-            change_text = f"🔴 {change_pct:.2f}%"
+
+            change_text = (
+                f"🔴 {change_pct:.2f}%"
+            )
+
         else:
-            change_text = "⚪ 0.00%"
+
+            change_text = (
+                "⚪ 0.00%"
+            )
+
+        # ----------------------------------------------------
+        # Latest datetime
+        # ----------------------------------------------------
+
+        latest_datetime = (
+            latest.get("datetime")
+        )
+
+        if latest_datetime is not None:
+
+            date_text = str(
+                latest_datetime
+            )
+
+        else:
+
+            date_text = "N/A"
+
+        # ----------------------------------------------------
+        # Message
+        # ----------------------------------------------------
 
         message = (
             "📊 TỔNG QUAN THỊ TRƯỜNG\n\n"
+
             "🇻🇳 VNINDEX\n"
-            f"• Điểm số: {_format_price(close)}\n"
-            f"• Thay đổi: {change_text}\n"
-            f"• Khối lượng: {_format_number(volume, 0)}\n\n"
-            "📅 Phạm vi dữ liệu\n"
-            f"• Số phiên: {len(market_df)}\n\n"
-            "💡 Bot sử dụng VNINDEX để cung cấp "
+            f"• Điểm số: "
+            f"{_format_price(close)}\n"
+
+            f"• Thay đổi: "
+            f"{change_text}\n"
+
+            f"• Khối lượng: "
+            f"{_format_number(volume, 0)}\n"
+
+            f"• Phiên gần nhất: "
+            f"{date_text}\n\n"
+
+            "📅 DỮ LIỆU\n"
+            f"• Số phiên: "
+            f"{len(market_df)}\n"
+
+            "• Nguồn: VNStock\n"
+            "• Cache: Market Updater\n\n"
+
+            "💡 VNINDEX được sử dụng để cung cấp "
             "bối cảnh thị trường; tín hiệu BUY/SELL "
             "vẫn được xác định riêng theo Strategy 2."
         )
@@ -3507,7 +3569,13 @@ async def market(
             message
         )
 
+        print(
+            "[MARKET] response sent",
+            flush=True,
+        )
+
     except Exception as error:
+
         print(
             f"[MARKET ERROR] {error}",
             flush=True,
