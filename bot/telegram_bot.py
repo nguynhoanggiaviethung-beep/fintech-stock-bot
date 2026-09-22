@@ -1,5 +1,4 @@
 import asyncio
-from unittest import signals
 import pandas as pd
 import json
 import os
@@ -2213,6 +2212,165 @@ async def signal(
             f"{symbol}.\n\n"
             f"Lỗi: {error}"
         )
+
+
+# ============================================================
+# /signals
+# ============================================================
+
+async def signals(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    await update.message.reply_text(
+        "🔎 Đang quét tín hiệu BUY "
+        "toàn bộ thị trường...\n\n"
+        "⏳ Quá trình này có thể mất một lúc."
+    )
+
+    try:
+
+        scanner = StockScanner(
+            page_size=100,
+            lookback_days=90,
+            request_delay=0.2,
+        )
+
+        results, statistics = (
+            await asyncio.to_thread(
+                scanner.scan_all
+            )
+        )
+
+        buy_signals = (
+            scanner.get_buy_signals(
+                results
+            )
+        )
+
+        # ----------------------------------------------------
+        # KHÔNG CÓ BUY
+        # ----------------------------------------------------
+
+        if not buy_signals:
+
+            message = (
+                "📊 TÍN HIỆU BUY TOÀN THỊ TRƯỜNG\n\n"
+                "❌ Hiện chưa có mã nào đạt "
+                "đầy đủ điều kiện BUY của Strategy 2.\n\n"
+                f"• Tổng universe: "
+                f"{statistics.get('total_symbols', 0)}\n"
+                f"• Đã phân tích: "
+                f"{len(results)}\n"
+                f"• BUY: 0"
+            )
+
+            await update.message.reply_text(
+                message
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # CÓ BUY
+        # ----------------------------------------------------
+
+        lines = [
+            "📊 TÍN HIỆU BUY TOÀN THỊ TRƯỜNG",
+            "",
+            f"🟢 Tìm thấy "
+            f"{len(buy_signals)} mã BUY",
+            "",
+        ]
+
+        for index, result in enumerate(
+            buy_signals,
+            start=1,
+        ):
+
+            symbol = result.get(
+                "symbol",
+                "UNKNOWN",
+            )
+
+            revenue_growth = result.get(
+                "revenue_growth"
+            )
+
+            net_income_growth = result.get(
+                "net_income_growth"
+            )
+
+            roe = result.get(
+                "roe"
+            )
+
+            volume_ratio = result.get(
+                "volume_ratio"
+            )
+
+            close = result.get(
+                "close"
+            )
+
+            lines.append(
+                f"{index}. 🟢 {symbol}"
+            )
+
+            lines.append(
+                f"   • Doanh thu: "
+                f"{_format_pct(revenue_growth)}"
+            )
+
+            lines.append(
+                f"   • Lợi nhuận: "
+                f"{_format_pct(net_income_growth)}"
+            )
+
+            lines.append(
+                f"   • ROE: "
+                f"{_format_pct(roe)}"
+            )
+
+            lines.append(
+                f"   • Volume: "
+                f"{_format_number(volume_ratio)}x MA20"
+            )
+
+            lines.append(
+                f"   • Giá: "
+                f"{_format_price(close)}"
+            )
+
+            lines.append("")
+
+        lines.extend(
+            [
+                "📌 Strategy 2:",
+                "• Revenue Growth > 15%",
+                "• Net Income Growth > 15%",
+                "• ROE > 15%",
+                "• Volume ≥ 1.5x MA20",
+                "• Giá đóng cửa > MA20",
+            ]
+        )
+
+        message = "\n".join(lines)
+
+        await update.message.reply_text(
+            message
+        )
+
+    except Exception as error:
+
+        await update.message.reply_text(
+            "❌ Không thể quét tín hiệu "
+            "toàn thị trường.\n\n"
+            f"Lỗi: {error}"
+        )
+
+
 # ============================================================
 # /analyze
 # ============================================================

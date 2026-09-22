@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -208,9 +209,13 @@ class StockScanner:
 
         statistics = {
             "total": len(symbols),
+            "total_symbols": len(symbols),
 
             "market_data_ok": 0,
             "market_data_empty": 0,
+
+            "technical_candidates": 0,
+            "technical_rejects": 0,
 
             "fundamental_data_ok": 0,
             "fundamental_data_empty": 0,
@@ -226,10 +231,11 @@ class StockScanner:
             "errors": 0,
         }
 
-        for index, symbol in enumerate(
-            symbols,
-            start=1,
-        ):
+        # ==================================================
+        # 1. LẤY MARKET DATA SONG SONG
+        # ==================================================
+
+        def fetch_market_data(symbol: str):
 
             symbol = (
                 symbol
@@ -237,16 +243,7 @@ class StockScanner:
                 .strip()
             )
 
-            print(
-                f"[{index}/{len(symbols)}] "
-                f"Scanning {symbol}..."
-            )
-
             try:
-
-                # ======================================
-                # MARKET DATA
-                # ======================================
 
                 market_df = (
                     self.data_manager.get_market_data(
@@ -256,26 +253,206 @@ class StockScanner:
                     )
                 )
 
-                if market_df.empty:
+                return (
+                    symbol,
+                    market_df,
+                    None,
+                )
+
+            except Exception as exc:
+
+                return (
+                    symbol,
+                    None,
+                    exc,
+                )
+
+        print(
+            f"Starting technical scan "
+            f"for {len(symbols)} stocks..."
+        )
+
+        market_results = {}
+
+        max_workers = 8
+
+        with ThreadPoolExecutor(
+            max_workers=max_workers
+        ) as executor:
+
+            futures = {
+                executor.submit(
+                    fetch_market_data,
+                    symbol,
+                ): symbol
+                for symbol in symbols
+            }
+
+            for index, future in enumerate(
+                as_completed(futures),
+                start=1,
+            ):
+
+                symbol = futures[future]
+
+                try:
+
+                    (
+                        symbol,
+                        market_df,
+                        error,
+                    ) = future.result()
+
+                    if error is not None:
+
+                        statistics[
+                            "errors"
+                        ] += 1
+
+                        print(
+                            f"[ERROR] {symbol}: "
+                            f"{type(error).__name__}: "
+                            f"{error}"
+                        )
+
+                        continue
+
+                    if (
+                        market_df is None
+                        or market_df.empty
+                    ):
+
+                        statistics[
+                            "market_data_empty"
+                        ] += 1
+
+                        continue
 
                     statistics[
-                        "market_data_empty"
+                        "market_data_ok"
+                    ] += 1
+
+                    market_results[
+                        symbol
+                    ] = market_df
+
+                except Exception as exc:
+
+                    statistics[
+                        "errors"
                     ] += 1
 
                     print(
-                        f"  [SKIP] {symbol}: "
-                        "no market data"
+                        f"[ERROR] {symbol}: "
+                        f"{type(exc).__name__}: "
+                        f"{exc}"
                     )
 
-                    continue
+                if (
+                    index % 100 == 0
+                    or index == len(symbols)
+                ):
+
+                    print(
+                        f"Market scan progress: "
+                        f"{index}/{len(symbols)}"
+                    )
+
+        # ==================================================
+        # 2. TECHNICAL PRE-FILTER
+        # ==================================================
+
+        technical_candidates = []
+
+        for symbol, market_df in (
+            market_results.items()
+        ):
+
+            try:
+
+                technical_result = (
+                    self.signal_engine
+                    .technical_filter
+                    .check_latest(
+                        market_df
+                    )
+                )
+
+                volume_breakout = bool(
+                    technical_result.get(
+                        "volume_breakout",
+                        False,
+                    )
+                )
+
+                price_momentum = bool(
+                    technical_result.get(
+                        "price_momentum",
+                        False,
+                    )
+                )
+
+                # Strategy 2 technical gate
+                if (
+                    volume_breakout
+                    and price_momentum
+                ):
+
+                    technical_candidates.append(
+                        (
+                            symbol,
+                            market_df,
+                        )
+                    )
+
+                    statistics[
+                        "technical_candidates"
+                    ] += 1
+
+                else:
+
+                    statistics[
+                        "technical_rejects"
+                    ] += 1
+
+            except Exception as exc:
 
                 statistics[
-                    "market_data_ok"
+                    "errors"
                 ] += 1
 
-                # ======================================
-                # FUNDAMENTAL DATA
-                # ======================================
+                print(
+                    f"[ERROR] Technical "
+                    f"{symbol}: "
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
+                )
+
+        print(
+            "Technical candidates: "
+            f"{len(technical_candidates)}"
+        )
+
+        # ==================================================
+        # 3. CHỈ LẤY FUNDAMENTAL CHO CÁC MÃ ĐẠT TECHNICAL
+        # ==================================================
+
+        for index, (
+            symbol,
+            market_df,
+        ) in enumerate(
+            technical_candidates,
+            start=1,
+        ):
+
+            print(
+                f"[FUNDAMENTAL "
+                f"{index}/"
+                f"{len(technical_candidates)}] "
+                f"{symbol}"
+            )
+
+            try:
 
                 fundamental_df = (
                     self.data_manager
@@ -301,9 +478,9 @@ class StockScanner:
                     "fundamental_data_ok"
                 ] += 1
 
-                # ======================================
-                # DATA QUALITY FILTER
-                # ======================================
+                # ==========================================
+                # DATA QUALITY
+                # ==========================================
 
                 quality_result = (
                     self.data_quality_filter
@@ -313,7 +490,9 @@ class StockScanner:
                     )
                 )
 
-                if not quality_result["passed"]:
+                if not quality_result[
+                    "passed"
+                ]:
 
                     statistics[
                         "data_quality_fail"
@@ -324,22 +503,15 @@ class StockScanner:
                         "data quality failed"
                     )
 
-                    for error in (
-                        quality_result["errors"]
-                    ):
-                        print(
-                            f"       - {error}"
-                        )
-
                     continue
 
                 statistics[
                     "data_quality_pass"
                 ] += 1
 
-                # ======================================
+                # ==========================================
                 # SIGNAL ENGINE
-                # ======================================
+                # ==========================================
 
                 result = (
                     self.signal_engine.analyze(
@@ -349,15 +521,14 @@ class StockScanner:
                     )
                 )
 
-                results.append(result)
-
-                # ======================================
-                # STATISTICS
-                # ======================================
+                results.append(
+                    result
+                )
 
                 if result.get(
                     "fundamental_pass"
                 ):
+
                     statistics[
                         "fundamental_pass"
                     ] += 1
@@ -365,6 +536,7 @@ class StockScanner:
                 if result.get(
                     "volume_breakout"
                 ):
+
                     statistics[
                         "volume_breakout"
                     ] += 1
@@ -377,10 +549,17 @@ class StockScanner:
                         "buy_signals"
                     ] += 1
 
-                print(
-                    f"  Signal: "
-                    f"{result.get('signal')}"
-                )
+                    print(
+                        f"  🟢 BUY: "
+                        f"{symbol}"
+                    )
+
+                else:
+
+                    print(
+                        f"  Signal: "
+                        f"{result.get('signal')}"
+                    )
 
             except Exception as exc:
 
@@ -390,23 +569,62 @@ class StockScanner:
 
                 print(
                     f"  [ERROR] {symbol}: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
                 )
 
-            # ==========================================
-            # REQUEST DELAY
-            # ==========================================
-
             if self.request_delay > 0:
+
                 time.sleep(
                     self.request_delay
                 )
+
+        # ==================================================
+        # SUMMARY
+        # ==================================================
+
+        print(
+            "\n========== SCAN SUMMARY =========="
+        )
+
+        print(
+            f"Universe: "
+            f"{statistics['total_symbols']}"
+        )
+
+        print(
+            f"Market data OK: "
+            f"{statistics['market_data_ok']}"
+        )
+
+        print(
+            f"Technical candidates: "
+            f"{statistics['technical_candidates']}"
+        )
+
+        print(
+            f"Fundamental checked: "
+            f"{statistics['fundamental_data_ok']}"
+        )
+
+        print(
+            f"BUY signals: "
+            f"{statistics['buy_signals']}"
+        )
+
+        print(
+            f"Errors: "
+            f"{statistics['errors']}"
+        )
+
+        print(
+            "=================================="
+        )
 
         return (
             results,
             statistics,
         )
-
     # ==================================================
     # SCAN ALL
     # ==================================================

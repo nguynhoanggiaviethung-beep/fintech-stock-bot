@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import pandas as pd
 import requests
 
@@ -60,64 +62,153 @@ class SSIDataClient:
             "Accept": "application/json",
         }
 
-        all_records = []
-        page = 1
+        # ========================================================
+        # DATE RANGE
+        # ========================================================
+        #
+        # SSI có giới hạn số dữ liệu trả về trong một khoảng
+        # thời gian lớn.
+        #
+        # Vì vậy khoảng thời gian được chia thành từng đoạn
+        # nhỏ rồi gọi SSI nhiều lần.
+        #
+        # Ví dụ:
+        #   2021 -> 2026
+        #
+        # sẽ được chia thành:
+        #   2021 -> 2022
+        #   2022 -> 2023
+        #   ...
+        #
+        # Các đoạn có overlap 1 ngày để tránh bỏ sót dữ liệu.
+        # Sau đó sẽ drop_duplicates theo symbol + datetime.
+        # ========================================================
 
-        while True:
+        requested_start = datetime.strptime(
+            start_date,
+            "%d/%m/%Y",
+        )
 
-            params = {
-                "symbol": symbol,
-                "page": page,
-                "pageSize": page_size,
-                "fromDate": start_date,
-                "toDate": end_date,
-            }
+        requested_end = datetime.strptime(
+            end_date,
+            "%d/%m/%Y",
+        )
 
-            response = requests.get(
-                url,
-                params=params,
-                headers=headers,
-                timeout=self.timeout,
+        if requested_start > requested_end:
+            raise ValueError(
+                "start_date phải nhỏ hơn hoặc bằng end_date."
             )
 
-            response.raise_for_status()
+        # Chia nhỏ mỗi request tối đa khoảng 90 ngày.
+        chunk_days = 90
 
-            try:
-                payload = response.json()
-            except ValueError as error:
-                raise RuntimeError(
-                    "SSI API không trả về JSON."
-                ) from error
+        all_records = []
 
-            if payload.get("code") != "SUCCESS":
-                raise RuntimeError(
-                    "SSI API error: "
-                    f"{payload.get('message')}"
+        chunk_start = requested_start
+
+        while chunk_start <= requested_end:
+
+            chunk_end = min(
+                chunk_start
+                + timedelta(days=chunk_days - 1),
+                requested_end,
+            )
+
+            chunk_start_str = chunk_start.strftime(
+                "%d/%m/%Y"
+            )
+
+            chunk_end_str = chunk_end.strftime(
+                "%d/%m/%Y"
+            )
+
+            print(
+                f"[SSI] {symbol}: "
+                f"{chunk_start_str} -> {chunk_end_str}",
+                flush=True,
+            )
+
+            page = 1
+
+            while True:
+
+                params = {
+                    "symbol": symbol,
+                    "page": page,
+                    "pageSize": page_size,
+                    "fromDate": chunk_start_str,
+                    "toDate": chunk_end_str,
+                }
+
+                response = requests.get(
+                    url,
+                    params=params,
+                    headers=headers,
+                    timeout=self.timeout,
                 )
 
-            records = payload.get("data") or []
+                response.raise_for_status()
 
-            if not records:
+                try:
+                    payload = response.json()
+                except ValueError as error:
+                    raise RuntimeError(
+                        "SSI API không trả về JSON."
+                    ) from error
+
+                if payload.get("code") != "SUCCESS":
+                    raise RuntimeError(
+                        "SSI API error: "
+                        f"{payload.get('message')}"
+                    )
+
+                records = payload.get("data") or []
+
+                if not records:
+                    break
+
+                all_records.extend(records)
+
+                if len(records) < page_size:
+                    break
+
+                page += 1
+
+                # Không cho pagination chạy vô hạn
+                if page > 100:
+                    raise RuntimeError(
+                        "SSI API pagination vượt quá "
+                        "100 trang."
+                    )
+
+            # Overlap 1 ngày giữa hai chunk.
+            # Ví dụ chunk trước kết thúc 29/09,
+            # chunk sau bắt đầu 29/09.
+            #
+            # Dữ liệu trùng sẽ được loại ở cuối hàm.
+            chunk_start = (
+                chunk_end
+                - timedelta(days=1)
+            )
+
+            # Tránh vòng lặp vô hạn khi đã tới ngày cuối.
+            if chunk_end >= requested_end:
                 break
 
-            all_records.extend(records)
-
-            if len(records) < page_size:
-                break
-
-            page += 1
-
-            # Không cho pagination chạy vô hạn
-            if page > 100:
-                raise RuntimeError(
-                    "SSI API pagination vượt quá "
-                    "100 trang."
-                )
+        # ========================================================
+        # EMPTY RESULT
+        # ========================================================
 
         if not all_records:
             return self._empty_dataframe()
 
-        df = pd.DataFrame(all_records)
+        df = pd.DataFrame(
+            all_records
+        )
+
+        # ========================================================
+        # REQUIRED COLUMNS
+        # ========================================================
 
         required_columns = [
             "tradingDate",
@@ -214,6 +305,7 @@ class SSIDataClient:
         # ========================================================
         # SYMBOL
         # ========================================================
+
         if "symbol" in df.columns:
             df["symbol"] = (
                 df["symbol"]
@@ -227,6 +319,7 @@ class SSIDataClient:
                 "symbol",
                 symbol,
             )
+
         # ========================================================
         # FINAL FORMAT
         # ========================================================
@@ -248,10 +341,19 @@ class SSIDataClient:
             df
             .sort_values("datetime")
             .drop_duplicates(
-                subset=["symbol", "datetime"],
+                subset=[
+                    "symbol",
+                    "datetime",
+                ],
                 keep="last",
             )
             .reset_index(drop=True)
         )
+
+        # Chỉ giữ dữ liệu nằm trong khoảng user yêu cầu.
+        df = df[
+            (df["datetime"] >= requested_start)
+            & (df["datetime"] <= requested_end)
+        ].reset_index(drop=True)
 
         return df
