@@ -6,7 +6,9 @@
   },
   "last_signals": {
     "123456": {
-      "ABB": "BUY"
+      "ABB": "SELL",
+      "WATCH_PVT": "NO_SIGNAL",
+      "WATCH_VFS": "NO_SIGNAL"
     }
   }
 }

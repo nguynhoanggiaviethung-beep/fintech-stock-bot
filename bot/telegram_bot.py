@@ -2476,6 +2476,8 @@ async def analyze(
             f"{_format_pct(result['net_income_growth'])}\n"
             f"• EPS: "
             f"{_format_number(result['eps'])}\n"
+            f"• Tăng trưởng EPS: "
+            f"{_format_pct(result['eps_growth'])}\n"
             f"• ROE: "
             f"{_format_pct(result['roe'])}\n"
             f"• D/E: "
