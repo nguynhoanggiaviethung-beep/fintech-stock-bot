@@ -45,50 +45,56 @@ class MarketUpdater:
         self._lock = threading.Lock()
 
     def update_once(self) -> pd.DataFrame:
-        """
-        Fetch market data once and update the cache.
+            """
+            Fetch market data once and update the cache.
+            Bổ sung fallback: Trả về Cache cũ nếu fetch từ DNSE thất bại/timeout.
+            """
+            try:
+                df = self.fetch_func()
 
-        Returns:
-            The fetched DataFrame.
+                if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+                    raise ValueError("DNSE không trả về dữ liệu hợp lệ hoặc bị rỗng.")
 
-        Raises:
-            Exception:
-                Re-raises any error from fetch_func().
-        """
-        df = self.fetch_func()
+                # Cập nhật cache nếu lấy dữ liệu mới thành công
+                self.cache.set(df)
 
-        if df is None:
-            raise ValueError("fetch_func() trả về None")
+                with self._lock:
+                    self._update_count += 1
+                    self._last_error = None
 
-        if not isinstance(df, pd.DataFrame):
-            raise TypeError("fetch_func() phải trả về pandas DataFrame")
+                return df
 
-        if df.empty:
-            raise ValueError("fetch_func() trả về DataFrame rỗng")
+            except Exception as error:
+                # Ghi lại lỗi timeout/kết nối
+                with self._lock:
+                    self._last_error = error
 
-        self.cache.set(df)
-
-        with self._lock:
-            self._update_count += 1
-            self._last_error = None
-
-        return df
+                # BẮT BÀI TIMEOUT: Thay vì ném exception ngắt bot, dùng cache hiện tại
+                cached_df = self.cache.get() if hasattr(self.cache, "get") else None
+                
+                if cached_df is not None and not cached_df.empty:
+                    print(f"[MARKET UPDATER WARNING] DNSE phản hồi chậm/lỗi ({error}). Đang dùng dữ liệu từ Cache.")
+                    return cached_df
+                
+                # Nếu cả cache cũng chưa có dữ liệu thì mới quăng lỗi
+                raise error
 
     def _run(self) -> None:
         """
         Background loop.
-
-        The first update happens immediately.
-        Subsequent updates happen after interval_seconds.
+        Thay đổi: Chờ interval_seconds trước khi chạy lần tiếp theo 
+        (vì start() đã gọi update_once() lần đầu tiên rồi).
         """
         while not self._stop_event.is_set():
+            # Chờ đúng khoảng thời gian interval_seconds trước lần update tiếp theo
+            if self._stop_event.wait(self.interval_seconds):
+                break
+
             try:
                 self.update_once()
             except Exception as error:
                 with self._lock:
                     self._last_error = error
-
-            self._stop_event.wait(self.interval_seconds)
 
     def start(self, update_immediately: bool = True) -> None:
         """

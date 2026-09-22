@@ -115,19 +115,52 @@ class DataManager:
 
     def get_market_data(
         self,
-        symbol: str,
-        start_timestamp: int,
-        end_timestamp: int,
+        symbol: str = "VNINDEX",
+        start_timestamp: int | None = None,
+        end_timestamp: int | None = None,
         resolution: str = "1D",
+        days: int = 30,
     ) -> pd.DataFrame:
         """
-        Lấy dữ liệu OHLCV lịch sử từ DNSE.
+        Lấy dữ liệu thị trường đồng nhất qua DNSE API.
         """
+        symbol = symbol.upper().strip()
 
-        response_text = self.dnse.get_historical_ohlcv(
-            symbol=symbol.upper(),
-            start_timestamp=start_timestamp,
-            end_timestamp=end_timestamp,
+        if not symbol:
+            raise ValueError("symbol không được để trống")
+
+        # Xử lý timestamp nếu có truyền vào
+        if start_timestamp is not None and end_timestamp is not None:
+            if symbol == "VNINDEX":
+                try:
+                    response_text = self.dnse.get_historical_index(
+                        index_symbol=symbol,
+                        start_timestamp=start_timestamp,
+                        end_timestamp=end_timestamp,
+                        resolution=resolution,
+                    )
+                    df = DataManager._parse_dnse_ohlcv(response_text)
+                    if not df.empty:
+                        df.insert(0, "symbol", symbol)
+                        return df
+                except Exception:
+                    pass
+            else:
+                response_text = self.dnse.get_historical_ohlcv(
+                    symbol=symbol,
+                    start_timestamp=start_timestamp,
+                    end_timestamp=end_timestamp,
+                    resolution=resolution,
+                )
+                return DataManager._parse_dnse_ohlcv(response_text)
+
+        # Nếu không truyền timestamp thì lấy theo số ngày
+        return self.get_historical_index(
+            index_symbol=symbol,
+            days=days,
+        ) if symbol == "VNINDEX" else self._get_stock_history(
+            symbol=symbol,
+            days=days,
             resolution=resolution,
         )
 
@@ -519,9 +552,9 @@ class MarketDataManager:
         days: int = 30,
     ) -> pd.DataFrame:
         """
-        Lấy dữ liệu VN-Index trong số ngày gần nhất.
+        Lấy dữ liệu VN-Index trong số ngày gần nhất từ DNSE.
+        Bổ sung: Bắt lỗi Timeout và fallback lấy từ Cache nếu API DNSE lỗi.
         """
-
         if days <= 0:
             raise ValueError("days phải lớn hơn 0")
 
@@ -529,33 +562,41 @@ class MarketDataManager:
 
         now_utc = pd.Timestamp.now(tz="UTC")
 
-        end_timestamp = int(
-            now_utc.timestamp()
-        )
+        end_timestamp = int(now_utc.timestamp())
 
         start_timestamp = int(
-            (
-                now_utc
-                - pd.Timedelta(days=days)
-            ).timestamp()
+            (now_utc - pd.Timedelta(days=days)).timestamp()
         )
 
-        response_text = self.dnse.get_historical_index(
-            index_symbol=index_symbol,
-            start_timestamp=start_timestamp,
-            end_timestamp=end_timestamp,
-            resolution="1D",
-        )
-
-        df = DataManager._parse_dnse_ohlcv(
-            response_text
-        )
-
-        if not df.empty:
-            df.insert(
-                0,
-                "symbol",
-                index_symbol,
+        try:
+            # Gọi API DNSE
+            response_text = self.dnse.get_historical_index(
+                index_symbol=index_symbol,
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+                resolution="1D",
             )
 
-        return df
+            df = DataManager._parse_dnse_ohlcv(response_text)
+
+            if not df.empty:
+                df.insert(0, "symbol", index_symbol)
+                # Lưu vào cache để dự phòng cho các lần gọi sau bị timeout
+                if hasattr(self, "cache") and self.cache:
+                    self.cache.set(df)
+                return df
+
+        except Exception as e:
+            print(f"[MARKET WARNING] Lỗi/Timeout khi gọi DNSE Index ({e}). Đang dùng Cache...")
+
+        # FALLBACK: Nếu gọi DNSE thất bại/timeout, lấy dữ liệu cũ từ Cache
+        if hasattr(self, "cache") and self.cache:
+            cached_df = self.cache.get()
+            if cached_df is not None and not cached_df.empty:
+                return cached_df
+
+        return pd.DataFrame(
+            columns=[
+                "symbol", "timestamp", "datetime", "open", "high", "low", "close", "volume"
+            ]
+        )
