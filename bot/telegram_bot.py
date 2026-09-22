@@ -1,4 +1,5 @@
 import asyncio
+import pandas as pd
 import json
 import os
 from datetime import datetime, timezone
@@ -1753,7 +1754,7 @@ def build_stock_analysis(
             "pb"
         ),
 
-        # Signal
+             # Signal
         "signal": signal_result.get(
             "signal"
         ),
@@ -1793,8 +1794,70 @@ def build_stock_analysis(
                 "volume_ratio"
             )
         ),
-    }
 
+        # SELL conditions
+        "position_held": (
+            signal_result.get(
+                "position_held"
+            )
+        ),
+        "entry_price": (
+            signal_result.get(
+                "entry_price"
+            )
+        ),
+        "highest_price": (
+            signal_result.get(
+                "highest_price"
+            )
+        ),
+        "loss_pct": (
+            signal_result.get(
+                "loss_pct"
+            )
+        ),
+        "sell_signal": (
+            signal_result.get(
+                "sell_signal"
+            )
+        ),
+        "sell_trigger": (
+            signal_result.get(
+                "sell_trigger"
+            )
+        ),
+        "stop_loss_trigger": (
+            signal_result.get(
+                "stop_loss_trigger"
+            )
+        ),
+        "trailing_stop_price": (
+            signal_result.get(
+                "trailing_stop_price"
+            )
+        ),
+        "trailing_stop_trigger": (
+            signal_result.get(
+                "trailing_stop_trigger"
+            )
+        ),
+        "price_break_ma20": (
+            signal_result.get(
+                "price_break_ma20"
+            )
+        ),
+        "volume_reversal": (
+            signal_result.get(
+                "volume_reversal"
+            )
+        ),
+        "sell_reasons": (
+            signal_result.get(
+                "sell_reasons",
+                []
+            )
+        ),
+    }
 
 # ============================================================
 # /start
@@ -1839,106 +1902,6 @@ async def start(
     await update.message.reply_text(
         message
     )
-
-
-# ============================================================
-# /signals
-# ============================================================
-
-async def signals(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    await update.message.reply_text(
-        "🔎 Đang quét tín hiệu BUY...\n"
-        "Vui lòng chờ trong giây lát."
-    )
-
-    try:
-
-        scanner = StockScanner()
-
-        # ----------------------------------------------------
-        # Hiện tại quét 20 mã để tránh API load quá lớn.
-        # Sẽ tối ưu thành market-wide scan sau.
-        # ----------------------------------------------------
-
-        results, stats = await asyncio.to_thread(
-            scanner.scan_all,
-            limit=20,
-        )
-
-        buy_signals = (
-            scanner.get_buy_signals(
-                results
-            )
-        )
-
-        # ----------------------------------------------------
-        # KHÔNG CÓ TÍN HIỆU MUA
-        # ----------------------------------------------------
-
-        if not buy_signals:
-
-            await update.message.reply_text(
-                "📊 KẾT QUẢ QUÉT TÍN HIỆU\n\n"
-                "Không tìm thấy mã nào thỏa mãn "
-                "Strategy 2 trong phạm vi quét hiện tại.\n\n"
-                f"• Đã quét: {stats['total']} mã\n"
-                f"• MUA: {stats['buy_signals']} mã\n"
-                f"• Fundamental PASS: "
-                f"{stats['fundamental_pass']} mã\n"
-                f"• Volume Breakout PASS: "
-                f"{stats['volume_breakout']} mã"
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # CÓ TÍN HIỆU MUA
-        # ----------------------------------------------------
-
-        lines = [
-            "📈 TÍN HIỆU MUA HÔM NAY",
-            "",
-            f"Đã quét: {stats['total']} mã",
-            f"Tìm thấy: {len(buy_signals)} mã MUA",
-            "",
-        ]
-
-        for item in buy_signals:
-
-            symbol = item[
-                "symbol"
-            ]
-
-            lines.append(
-                f"🟢 {symbol}\n"
-                f"   • Tăng trưởng doanh thu: "
-                f"{_format_pct(item['revenue_growth'])}\n"
-                f"   • Tăng trưởng lợi nhuận: "
-                f"{_format_pct(item['net_income_growth'])}\n"
-                f"   • ROE: "
-                f"{_format_pct(item['roe'])}\n"
-                f"   • Tỷ lệ khối lượng: "
-                f"{_format_number(item['volume_ratio'])}x\n"
-                f"   • Giá đóng cửa: "
-                f"{_format_price(item['close'])}\n"
-                f"   • MA20: "
-                f"{_format_price(item['price_ma20'])}\n"
-            )
-
-        await update.message.reply_text(
-            "\n".join(lines)
-        )
-
-    except Exception as error:
-
-        await update.message.reply_text(
-            "❌ Không thể quét tín hiệu.\n\n"
-            f"Lỗi: {error}"
-        )
 
 
 # ============================================================
@@ -1988,8 +1951,35 @@ async def signal(
         signal_value = result["signal"]
 
         signal_text = _format_signal(
-                signal_value
+            signal_value
+        )
+
+        # ----------------------------------------------------
+        # PHÂN TÍCH LÝ DO KHÔNG CÓ TÍN HIỆU
+        # ----------------------------------------------------
+
+        reasons = []
+
+        if not result["fundamental_pass"]:
+            reasons.append(
+                "• ❌ Fundamental chưa đạt"
             )
+
+        if not result["volume_breakout"]:
+            reasons.append(
+                "• ❌ Chưa có Volume Breakout "
+                f"≥ 1.5x MA20"
+            )
+
+        if not result["price_momentum"]:
+            reasons.append(
+                "• ❌ Price Momentum chưa đạt "
+                "(Giá ≤ MA20)"
+            )
+
+        # ----------------------------------------------------
+        # MESSAGE
+        # ----------------------------------------------------
 
         message = (
             f"📊 {symbol} — TÍN HIỆU CỔ PHIẾU\n\n"
@@ -2026,6 +2016,71 @@ async def signal(
             f"{_format_condition(result['price_momentum'])}"
         )
 
+        # ----------------------------------------------------
+        # GIẢI THÍCH KHI KHÔNG CÓ TÍN HIỆU
+        # ----------------------------------------------------
+
+        if signal_value == "NO_SIGNAL":
+
+            message += (
+                "\n\n"
+                "📌 LÝ DO CHƯA CÓ TÍN HIỆU BUY\n"
+                + "\n".join(reasons)
+                + "\n\n"
+                "→ Strategy 2 yêu cầu tất cả "
+                "điều kiện BUY cùng đạt."
+            )
+
+        elif signal_value == "BUY":
+
+            message += (
+                "\n\n"
+                "✅ TẤT CẢ ĐIỀU KIỆN BUY ĐỀU ĐẠT."
+            )
+
+        elif signal_value == "SELL":
+
+            sell_reasons = result.get(
+                "sell_reasons",
+                []
+            )
+
+            message += (
+                "\n\n"
+                "📌 LÝ DO SELL\n"
+            )
+
+            if sell_reasons:
+                message += "\n".join(
+                    f"• ❌ {reason}"
+                    for reason in sell_reasons
+                )
+            else:
+                message += (
+                    "• ❌ Điều kiện thoát vị thế "
+                    "đã được kích hoạt."
+                )
+
+            entry_price = result.get(
+                "entry_price"
+            )
+
+            loss_pct = result.get(
+                "loss_pct"
+            )
+
+            if entry_price is not None:
+                message += (
+                    f"\n• Giá vốn: "
+                    f"{float(entry_price):,.2f}"
+                )
+
+            if loss_pct is not None:
+                message += (
+                    f"\n• Mức lỗ hiện tại: "
+                    f"{float(loss_pct):.2f}%"
+                )
+
         await update.message.reply_text(
             message
         )
@@ -2037,8 +2092,6 @@ async def signal(
             f"{symbol}.\n\n"
             f"Lỗi: {error}"
         )
-
-
 # ============================================================
 # /analyze
 # ============================================================
@@ -4215,7 +4268,6 @@ def create_bot():
         Application
         .builder()
         .token(TOKEN)
-        .updater(None)
         .post_init(_post_init)
         .post_shutdown(_post_shutdown)
         .build()
@@ -4235,7 +4287,7 @@ def create_bot():
     application.add_handler(
         CommandHandler(
             "signals",
-            signals,
+            signal,
         )
     )
 

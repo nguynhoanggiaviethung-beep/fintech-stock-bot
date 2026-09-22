@@ -33,17 +33,34 @@ async def telegram_webhook(request):
     return web.Response(text="OK")
 
 
-async def main():
-    application = create_bot()
+async def run_polling(application):
+    """
+    Chạy bot local bằng polling.
+    """
 
-    # Khởi tạo Telegram Application
-    await application.initialize()
+    print("=================================")
+    print("FINSTOCKVN BOT")
+    print("Polling mode")
+    print("Bot is running...")
+    print("=================================")
 
-    # Khởi động các service của bot:
-    # subscription, watchlist, portfolio, alert monitor...
-    await _post_init(application)
+    await application.updater.start_polling(
+        drop_pending_updates=False
+    )
 
-    await application.start()
+    try:
+        await asyncio.Event().wait()
+
+    finally:
+        print("Stopping polling...")
+
+        await application.updater.stop()
+
+
+async def run_webhook(application):
+    """
+    Chạy bot trên Render bằng webhook.
+    """
 
     app = web.Application()
 
@@ -76,16 +93,17 @@ async def main():
     render_url = os.getenv("RENDER_EXTERNAL_URL")
 
     if not render_url:
-        print("WARNING: RENDER_EXTERNAL_URL chưa được thiết lập.")
-        print("Webhook chưa được đăng ký tự động.")
-    else:
-        webhook_url = f"{render_url}/telegram"
-
-        await application.bot.set_webhook(
-            url=webhook_url,
+        raise RuntimeError(
+            "RENDER_EXTERNAL_URL chưa được thiết lập."
         )
 
-        print(f"Webhook URL: {webhook_url}")
+    webhook_url = f"{render_url.rstrip('/')}/telegram"
+
+    await application.bot.set_webhook(
+        url=webhook_url,
+    )
+
+    print(f"Webhook URL: {webhook_url}")
 
     print("=================================")
     print("FINSTOCKVN BOT")
@@ -95,23 +113,69 @@ async def main():
     print("=================================")
 
     try:
-        # Giữ Web Service chạy
         await asyncio.Event().wait()
 
     finally:
-        print("Shutting down bot...")
+        print("Shutting down webhook...")
 
         try:
             await application.bot.delete_webhook()
         except Exception as error:
             print(f"Webhook cleanup error: {error}")
 
+        await runner.cleanup()
+
+
+async def main():
+
+    application = create_bot()
+
+    # Khởi tạo Telegram Application
+    await application.initialize()
+
+    # Khởi động các service của bot:
+    # subscription, watchlist, portfolio, alert monitor...
+    await _post_init(application)
+
+    await application.start()
+
+    try:
+
+        render_url = os.getenv("RENDER_EXTERNAL_URL")
+
+        if render_url:
+            # ==============================
+            # RENDER → WEBHOOK
+            # ==============================
+            await run_webhook(application)
+
+        else:
+            # ==============================
+            # LOCAL → POLLING
+            # ==============================
+            print(
+                "RENDER_EXTERNAL_URL không tồn tại."
+            )
+            print(
+                "Chuyển sang LOCAL POLLING mode..."
+            )
+
+            # Nếu Telegram đang còn webhook từ Render,
+            # xóa webhook trước khi polling.
+            await application.bot.delete_webhook(
+                drop_pending_updates=False
+            )
+
+            await run_polling(application)
+
+    finally:
+
+        print("Shutting down bot...")
+
         await _post_shutdown(application)
 
         await application.stop()
         await application.shutdown()
-
-        await runner.cleanup()
 
 
 if __name__ == "__main__":

@@ -3,6 +3,10 @@
     "A32": {
       "quantity": 100.0,
       "avg_price": 27500.0
+    },
+    "ABB": {
+      "quantity": 1000.0,
+      "avg_price": 20.0
     }
   }
 }
