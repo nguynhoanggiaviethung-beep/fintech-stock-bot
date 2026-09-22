@@ -1,4 +1,4 @@
-# Fintech Stock Bot
+# FINSTOCKVN BOT
 
 Telegram Bot hỗ trợ phân tích và theo dõi cổ phiếu Việt Nam.
 
