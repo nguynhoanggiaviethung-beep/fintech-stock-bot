@@ -3406,6 +3406,7 @@ async def market(
     """
     Tổng quan VNINDEX trong khoảng 30 phiên gần nhất.
     """
+
     print("[MARKET] command received", flush=True)
 
     await update.message.reply_text(
@@ -3424,16 +3425,33 @@ async def market(
 
         print("[MARKET] calling DNSE", flush=True)
 
-        market_df = await asyncio.to_thread(
-            market_manager.get_market_data,
-            symbol="VNINDEX",
-            start_timestamp=start_timestamp,
-            end_timestamp=end_timestamp,
-        )
+        try:
+            market_df = await asyncio.wait_for(
+                asyncio.to_thread(
+                    market_manager.get_market_data,
+                    symbol="VNINDEX",
+                    start_timestamp=start_timestamp,
+                    end_timestamp=end_timestamp,
+                ),
+                timeout=15,
+            )
+
+        except asyncio.TimeoutError:
+            print(
+                "[MARKET] DNSE timeout after 15 seconds",
+                flush=True,
+            )
+
+            await update.message.reply_text(
+                "⚠️ Dữ liệu VNINDEX đang phản hồi chậm.\n\n"
+                "DNSE không trả dữ liệu trong 15 giây. "
+                "Vui lòng thử lại sau."
+            )
+            return
 
         print("[MARKET] DNSE returned", flush=True)
 
-        if market_df.empty:
+        if market_df is None or market_df.empty:
             raise ValueError(
                 "Không có dữ liệu VNINDEX."
             )
@@ -3490,11 +3508,15 @@ async def market(
         )
 
     except Exception as error:
+        print(
+            f"[MARKET ERROR] {error}",
+            flush=True,
+        )
+
         await update.message.reply_text(
             "❌ Không thể lấy dữ liệu thị trường.\n\n"
             f"Lỗi: {error}"
         )
-
 # ============================================================
 # /watchlist
 # ============================================================
