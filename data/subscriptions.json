@@ -2,11 +2,17 @@
   "subscriptions": {
     "123456": [
       "ABB"
+    ],
+    "1987799335": [
+      "ABB"
     ]
   },
   "last_signals": {
     "123456": {
-      "ABB": "BUY"
+      "ABB": "SELL"
+    },
+    "1987799335": {
+      "ABB": "SELL"
     }
   }
 }

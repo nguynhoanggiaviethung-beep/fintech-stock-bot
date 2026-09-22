@@ -1,4 +1,5 @@
 import asyncio
+from unittest import signals
 import pandas as pd
 import json
 import os
@@ -4369,7 +4370,7 @@ def create_bot():
     application.add_handler(
         CommandHandler(
             "signals",
-            signal,
+            signals
         )
     )
 
