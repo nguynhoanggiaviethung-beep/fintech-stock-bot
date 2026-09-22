@@ -3406,6 +3406,7 @@ async def market(
     """
     Tổng quan VNINDEX trong khoảng 30 phiên gần nhất.
     """
+    print("[MARKET] command received", flush=True)
 
     await update.message.reply_text(
         "📊 Đang lấy dữ liệu thị trường..."
@@ -3421,12 +3422,16 @@ async def market(
         # DataManager hiện có lớp quản lý VNINDEX.
         market_manager = data_manager.market_manager
 
+        print("[MARKET] calling DNSE", flush=True)
+
         market_df = await asyncio.to_thread(
             market_manager.get_market_data,
             symbol="VNINDEX",
             start_timestamp=start_timestamp,
             end_timestamp=end_timestamp,
         )
+
+        print("[MARKET] DNSE returned", flush=True)
 
         if market_df.empty:
             raise ValueError(
