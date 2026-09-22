@@ -1839,6 +1839,9 @@ def build_stock_analysis(
         "eps": latest_fundamental.get(
             "eps"
         ),
+        "eps_growth": latest_fundamental.get(
+            "eps_growth"
+        ),
         "roe": latest_fundamental.get(
             "roe"
         ),
