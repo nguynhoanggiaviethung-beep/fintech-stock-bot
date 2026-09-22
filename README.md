@@ -149,54 +149,223 @@ Các chỉ tiêu chính:
 
 ## Công nghệ sử dụng
 
-| Thành phần | Công nghệ |
+| Thành phần | Công nghệ / Nền tảng |
 |---|---|
-| Programming Language | Python |
+| Ngôn ngữ lập trình | Python |
 | Telegram Bot | python-telegram-bot |
-| Market Data | DNSE API |
-| Financial Data | VNStock |
-| Real-time Data | VNStock |
-| Data Processing | Pandas |
-| Testing | unittest |
-| Version Control | Git / GitHub |
-| Deployment | Render | 
+| Giá lịch sử & OHLCV | SSI iBoard API |
+| Dữ liệu tài chính | VNStock |
+| Dữ liệu giao dịch gần thời gian thực | VNStock Quote |
+| Dữ liệu thị trường VN-INDEX | VNStock Market |
+| Xử lý & phân tích dữ liệu | Pandas |
+| Phân tích kỹ thuật | Python, Pandas |
+| Phân tích cơ bản | Python, Pandas, VNStock |
+| Bộ máy tín hiệu | Python |
+| Backtest | Python, Pandas |
+| Kiểm thử | unittest |
+| Quản lý phiên bản | Git / GitHub |
+| Triển khai | Render |
 
 
-## Kiến trúc hệ thống
+## Cấu trúc hệ thống
 
-Project được thiết kế theo mô hình phân tách thành các layer chính:
+Hệ thống được xây dựng theo kiến trúc phân lớp, tách biệt
+giao diện Telegram, tầng phân tích, quản lý dữ liệu và các
+nguồn dữ liệu bên ngoài.
 
-```text
-                    Telegram User
-                          |
-                          v
-                +-------------------+
-                |   Telegram Bot    |
-                | telegram_bot.py   |
-                +---------+---------+
-                          |
-                          v
-                +-------------------+
-                |  Analysis Layer   |
-                |                   |
-                | Signal Engine     |
-                | Stock Scanner     |
-                | Technical Filter  |
-                | Fundamental Filter|
-                | Backtest Engine   |
-                +---------+---------+
-                          |
-                          v
-                +-------------------+
-                |     Data Layer    |
-                |                   |
-                | DNSE Client       |
-                | VNStock Client    |
-                | Realtime Client   |
-                | Data Manager      |
-                +---------+---------+
-                          |
-                 +--------+--------+
-                 |                 |
-                 v                 v
-             DNSE API          VNStock API
+```mermaid
+flowchart TB
+
+    U[Người dùng Telegram]
+
+    B[Tầng Telegram Bot]
+
+    A[Tầng Phân tích]
+    S[Bộ máy Tín hiệu]
+    BT[Bộ máy Backtest]
+
+    DM[Data Manager]
+
+    SSI[SSI iBoard API]
+    VNS[VNStock]
+    RT[VNStock Quote]
+
+    U --> B
+
+    B --> A
+    B --> BT
+
+    A --> S
+    BT --> S
+
+    A --> DM
+    BT --> DM
+
+    DM --> SSI
+    DM --> VNS
+    DM --> RT
+```
+## Luồng dữ liệu
+
+```mermaid
+   SSI[SSI - Dữ liệu giá lịch sử]
+    VS[VNStock - Dữ liệu tài chính]
+    RT[VNStock Quote - Dữ liệu giao dịch gần thời gian thực]
+
+    DM[Data Manager]
+
+    OHLCV[Dữ liệu OHLCV]
+    FUND[Dữ liệu tài chính]
+
+    TECH[Bộ lọc Kỹ thuật]
+    FUND_FILTER[Bộ lọc Cơ bản]
+
+    SIGNAL[Bộ máy Tín hiệu]
+
+    BUY[Tín hiệu BUY]
+    SELL[Tín hiệu SELL]
+    NONE[NO_SIGNAL]
+
+    SSI --> DM
+    VS --> DM
+    RT --> DM
+
+    DM --> OHLCV
+    DM --> FUND
+
+    OHLCV --> TECH
+    FUND --> FUND_FILTER
+
+    TECH --> SIGNAL
+    FUND_FILTER --> SIGNAL
+
+    SIGNAL --> BUY
+    SIGNAL --> SELL
+    SIGNAL --> NONE
+```
+## Chiến lược giao dịch — Strategy 2
+
+Chiến lược kết hợp điều kiện tăng trưởng cơ bản với xác nhận
+động lượng giá và đột biến thanh khoản.
+
+```mermaid
+flowchart TD
+
+    START[Cổ phiếu]
+
+    F1[Tăng trưởng Doanh thu > 15%]
+    F2[Tăng trưởng Lợi nhuận > 15%]
+    F3[ROE > 15%]
+
+    FP[Đạt điều kiện Cơ bản]
+
+    T1[Khối lượng >= 1.5 x Volume MA20]
+    T2[Giá đóng cửa > MA20]
+
+    TP[Đạt điều kiện Kỹ thuật]
+
+    P[Không có vị thế đang nắm giữ]
+
+    BUY[Tín hiệu BUY]
+
+    START --> F1
+    F1 --> F2
+    F2 --> F3
+
+    F3 --> FP
+
+    FP --> T1
+    T1 --> T2
+
+    T2 --> TP
+    TP --> P
+
+    P --> BUY
+```
+
+## Chiến lược thoát lệnh (SELL)
+
+SELL chỉ được xét khi nhà đầu tư đang nắm giữ vị thế.
+
+```mermaid
+flowchart TD
+
+    HOLD[Đang nắm giữ vị thế]
+
+    PRICE[Giá hiện tại]
+
+    SL[Stop Loss <= -5%]
+    TS[Kích hoạt Trailing Stop]
+    MA[Giá đóng cửa < MA20]
+    VR[Đảo chiều khối lượng]
+
+    SELL[Tín hiệu SELL]
+
+    HOLD --> PRICE
+
+    PRICE --> SL
+    PRICE --> TS
+    PRICE --> MA
+    PRICE --> VR
+
+    SL --> SELL
+    TS --> SELL
+    MA --> SELL
+    VR --> SELL
+```
+## Quy trình Backtest
+
+Hệ thống tạo tín hiệu tại giá đóng cửa của phiên T và thực hiện
+lệnh tại giá mở cửa của phiên T+1.
+
+```mermaid
+sequenceDiagram
+
+    participant M as Thị trường
+    participant S as Bộ máy Tín hiệu
+    participant B as Bộ máy Backtest
+
+    M->>S: Giá đóng cửa phiên T + Khối lượng
+    S->>S: Kiểm tra Strategy 2
+    S-->>B: BUY / SELL / NO_SIGNAL
+
+    Note over B: Lưu hành động chờ thực hiện
+
+    M->>B: Giá mở cửa phiên T+1
+    B->>B: Thực hiện hành động
+    B->>B: Cập nhật vị thế
+    B->>B: Tính giá trị danh mục cuối ngày
+```
+##  Xử lý dữ liệu lịch sử
+
+Do SSI iBoard có giới hạn dữ liệu khi truy vấn một khoảng thời gian
+dài, hệ thống chia khoảng thời gian cần lấy thành nhiều đoạn nhỏ,
+sau đó hợp nhất dữ liệu và loại bỏ các bản ghi trùng nhau.
+
+```mermaid
+flowchart TD
+
+    REQUEST[Khoảng thời gian cần lấy]
+
+    SPLIT[Chia thành các đoạn 90 ngày]
+
+    API[Gọi SSI iBoard API]
+
+    MERGE[Hợp nhất dữ liệu]
+
+    REMOVE[Loại bỏ ngày bị trùng]
+
+    SORT[Sắp xếp theo thời gian]
+
+    NORMALIZE[Chuẩn hóa dữ liệu OHLCV]
+
+    RESULT[DataFrame dữ liệu lịch sử]
+
+    REQUEST --> SPLIT
+    SPLIT --> API
+    API --> MERGE
+    MERGE --> REMOVE
+    REMOVE --> SORT
+    SORT --> NORMALIZE
+    NORMALIZE --> RESULT
+```
