@@ -408,6 +408,7 @@ class VnstockFundamentalClient:
 
         previous_revenue = None
         previous_net_income = None
+        previous_eps = None
         previous_equity = None
 
         for period in periods:
@@ -447,6 +448,14 @@ class VnstockFundamentalClient:
                 self._calculate_growth(
                     net_income,
                     previous_net_income,
+                )
+            
+            )
+
+            eps_growth = (
+                self._calculate_growth(
+                    eps,
+                    previous_eps,
                 )
             )
 
@@ -535,6 +544,7 @@ class VnstockFundamentalClient:
                     "net_income_growth": net_income_growth,
 
                     "eps": eps,
+                    "eps_growth": eps_growth,
 
                     "roe": roe,
 
@@ -562,6 +572,7 @@ class VnstockFundamentalClient:
             previous_revenue = revenue
             previous_net_income = net_income
             previous_equity = equity
+            previous_eps = eps
 
         result = pd.DataFrame(records)
 

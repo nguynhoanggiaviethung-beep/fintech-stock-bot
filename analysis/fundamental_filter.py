@@ -21,6 +21,7 @@ class FundamentalFilter:
         self,
         min_revenue_growth: float = 15.0,
         min_net_income_growth: float = 15.0,
+        min_eps_growth: float = 15.0,
         min_roe: float = 15.0,
     ):
         self.min_revenue_growth = (
@@ -31,6 +32,7 @@ class FundamentalFilter:
             min_net_income_growth
         )
 
+        self.min_eps_growth = min_eps_growth
         self.min_roe = min_roe
 
     @staticmethod
@@ -73,6 +75,10 @@ class FundamentalFilter:
             "roe"
         )
 
+        eps_growth = fundamental_row.get(
+            "eps_growth"
+        )
+
         # ==========================================
         # 1. KIỂM TRA REVENUE GROWTH
         # ==========================================
@@ -97,6 +103,11 @@ class FundamentalFilter:
             > self.min_net_income_growth
         )
 
+        eps_growth_pass = (
+            self._is_valid_number(eps_growth)
+            and eps_growth >= self.min_eps_growth
+        )
+
         # ==========================================
         # 3. KIỂM TRA ROE
         # ==========================================
@@ -113,6 +124,7 @@ class FundamentalFilter:
         fundamental_pass = (
             revenue_growth_pass
             and net_income_growth_pass
+            and eps_growth_pass
             and roe_pass
         )
 
@@ -145,6 +157,11 @@ class FundamentalFilter:
 
             "fundamental_pass": (
                 fundamental_pass
+            ),
+            "eps_growth": eps_growth,
+
+            "eps_growth_pass": (
+                eps_growth_pass
             ),
         }
 

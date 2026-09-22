@@ -14,6 +14,7 @@ def create_fundamental_data():
                 "roe": 18.0,
                 "revenue_growth": 20.0,
                 "net_income_growth": 25.0,
+                "eps_growth": 20.0,
             }
         ]
     )
@@ -141,6 +142,7 @@ def test_buy_all_conditions_pass():
     # Fundamental:
     # Revenue Growth = 20% > 15%
     # Net Income Growth = 25% > 15%
+    # EPS Growth = 20% > 15%
     # ROE = 18% > 15%
     #
     # Technical:
@@ -288,6 +290,7 @@ def test_buy_blocked_when_fundamental_fails():
                 "roe": 14.0,
                 "revenue_growth": 10.0,
                 "net_income_growth": 12.0,
+                "eps_growth": 20.0,
             }
         ]
     )
