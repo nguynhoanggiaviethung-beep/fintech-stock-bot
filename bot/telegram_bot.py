@@ -3001,26 +3001,26 @@ async def backtest(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     """
-    Chạy backtest Strategy 2.
+    Chạy backtest cho một mã cổ phiếu.
 
     Cú pháp:
-
         /backtest ABB
-
-    hoặc:
-
-        /backtest ABB 365
+        /backtest ABB 180
     """
 
-    if not context.args:
+    # --------------------------------------------------------
+    # Validate command
+    # --------------------------------------------------------
 
+    if not context.args:
         await update.message.reply_text(
-            "Vui lòng nhập mã cổ phiếu.\n\n"
+            "📊 Cú pháp:\n\n"
+            "/backtest <MÃ>\n"
+            "/backtest <MÃ> <SỐ_NGÀY>\n\n"
             "Ví dụ:\n"
             "/backtest ABB\n"
-            "/backtest ABB 365"
+            "/backtest ABB 180"
         )
-
         return
 
     symbol = (
@@ -3029,16 +3029,8 @@ async def backtest(
         .strip()
     )
 
-    if not symbol.isalnum():
-
-        await update.message.reply_text(
-            "❌ Mã cổ phiếu không hợp lệ."
-        )
-
-        return
-
     # --------------------------------------------------------
-    # Số ngày backtest
+    # Số ngày
     # --------------------------------------------------------
 
     days = 180
@@ -3046,7 +3038,6 @@ async def backtest(
     if len(context.args) >= 2:
 
         try:
-
             days = int(
                 context.args[1]
             )
@@ -3054,27 +3045,32 @@ async def backtest(
         except ValueError:
 
             await update.message.reply_text(
-                "❌ Số ngày không hợp lệ.\n\n"
+                "❌ Số ngày phải là số nguyên.\n\n"
                 "Ví dụ:\n"
                 "/backtest ABB 180"
             )
-
             return
 
-    if days < 30 or days > 1000:
+    if days <= 0:
 
         await update.message.reply_text(
-            "❌ Khoảng backtest phải từ "
-            "30 đến 1000 ngày."
+            "❌ Số ngày phải lớn hơn 0."
         )
-
         return
+
+    # --------------------------------------------------------
+    # Thông báo đang chạy
+    # --------------------------------------------------------
 
     await update.message.reply_text(
         f"📊 Đang chạy backtest {symbol}...\n"
         f"Khoảng thời gian: {days} ngày\n\n"
         "Vui lòng chờ trong giây lát."
     )
+
+    # --------------------------------------------------------
+    # Run backtest
+    # --------------------------------------------------------
 
     try:
 
@@ -3096,9 +3092,42 @@ async def backtest(
         # Metrics
         # ----------------------------------------------------
 
+        initial_capital = (
+            backtest_result.get(
+                "initial_capital"
+            )
+        )
+
+        final_capital = (
+            backtest_result.get(
+                "final_capital"
+            )
+        )
+
         total_return = (
             backtest_result.get(
                 "total_return_pct"
+            )
+        )
+
+        total_trades = (
+            backtest_result.get(
+                "total_trades",
+                0,
+            )
+        )
+
+        winning_trades = (
+            backtest_result.get(
+                "winning_trades",
+                0,
+            )
+        )
+
+        losing_trades = (
+            backtest_result.get(
+                "losing_trades",
+                0,
             )
         )
 
@@ -3138,89 +3167,187 @@ async def backtest(
             )
         )
 
-        initial_capital = (
+        # ----------------------------------------------------
+        # Profit / Loss bằng tiền
+        # ----------------------------------------------------
+
+        profit_loss = None
+
+        if (
+            initial_capital is not None
+            and final_capital is not None
+        ):
+
+            profit_loss = (
+                float(final_capital)
+                - float(initial_capital)
+            )
+
+        # ----------------------------------------------------
+        # Format lời/lỗ
+        # ----------------------------------------------------
+
+        if profit_loss is None:
+
+            profit_loss_text = "N/A"
+
+        elif profit_loss > 0:
+
+            profit_loss_text = (
+                f"+{_format_number(profit_loss, 0)}"
+            )
+
+        elif profit_loss < 0:
+
+            profit_loss_text = (
+                _format_number(profit_loss, 0)
+            )
+
+        else:
+
+            profit_loss_text = "0"
+
+        # ----------------------------------------------------
+        # Format ngày backtest
+        # ----------------------------------------------------
+
+        if (
+            market_df is not None
+            and not market_df.empty
+            and "datetime" in market_df.columns
+        ):
+
+            start_date = (
+                market_df["datetime"]
+                .iloc[0]
+            )
+
+            end_date = (
+                market_df["datetime"]
+                .iloc[-1]
+            )
+
+        else:
+
+            start_date = "N/A"
+            end_date = "N/A"
+
+        # ----------------------------------------------------
+        # Open position
+        # ----------------------------------------------------
+
+        open_position = backtest_result.get(
+            "open_position"
+        )
+
+        if open_position is True:
+
+            open_position_text = "Có"
+
+        elif open_position is False:
+
+            open_position_text = "Không"
+
+        else:
+
+            open_position_text = "N/A"
+
+        # ----------------------------------------------------
+        # Pending action
+        # ----------------------------------------------------
+
+        pending_action = (
             backtest_result.get(
-                "initial_capital"
+                "pending_action"
             )
         )
 
-        final_capital = (
-            backtest_result.get(
-                "final_capital"
-            )
-        )
+        if pending_action is None:
 
-        total_trades = (
-            backtest_result.get(
-                "total_trades",
-                0,
-            )
-        )
+            pending_action_text = "Không"
 
-        winning_trades = (
-            backtest_result.get(
-                "winning_trades",
-                0,
-            )
-        )
+        else:
 
-        losing_trades = (
-            backtest_result.get(
-                "losing_trades",
-                0,
+            pending_action_text = str(
+                pending_action
             )
-        )
+
+        # ----------------------------------------------------
+        # Performance icon
+        # ----------------------------------------------------
+
+        if (
+            total_return is not None
+            and float(total_return) > 0
+        ):
+
+            return_icon = "🟢"
+
+        elif (
+            total_return is not None
+            and float(total_return) < 0
+        ):
+
+            return_icon = "🔴"
+
+        else:
+
+            return_icon = "⚪"
 
         # ----------------------------------------------------
         # Message
         # ----------------------------------------------------
 
         message = (
-            f"📊 BACKTEST — {symbol}\n\n"
+            f"📊 BACKTEST — {symbol}\n"
+            f"{'=' * 30}\n\n"
 
             f"📅 THỜI GIAN\n"
-            f"• Từ: "
-            f"{market_df['datetime'].iloc[0]}\n"
-            f"• Đến: "
-            f"{market_df['datetime'].iloc[-1]}\n"
+            f"• Từ: {start_date}\n"
+            f"• Đến: {end_date}\n"
             f"• Số phiên giao dịch: "
             f"{len(market_df)}\n\n"
 
-            f"💰 HIỆU SUẤT\n"
+            f"💰 KẾT QUẢ\n"
             f"• Vốn ban đầu: "
             f"{_format_number(initial_capital, 0)}\n"
             f"• Vốn cuối kỳ: "
             f"{_format_number(final_capital, 0)}\n"
+            f"• Lời/Lỗ: "
+            f"{profit_loss_text}\n"
             f"• Tổng lợi nhuận: "
-            f"{_format_pct(total_return)}\n"
-            f"• Mức sụt giảm tối đa: "
-            f"{_format_pct(max_drawdown)}\n\n"
+            f"{return_icon} "
+            f"{_format_pct(total_return)}\n\n"
 
             f"📈 GIAO DỊCH\n"
             f"• Tổng số giao dịch: "
             f"{total_trades}\n"
-            f"• Giao dịch có lãi: "
+            f"• Giao dịch thắng: "
             f"{winning_trades}\n"
-            f"• Giao dịch thua lỗ: "
+            f"• Giao dịch thua: "
             f"{losing_trades}\n"
-            f"• Tỷ lệ thắng: "
-            f"{_format_pct(win_rate)}\n"
-            f"• Lợi nhuận giao dịch trung bình: "
-            f"{_format_pct(average_trade_return)}\n"
-            f"• Giao dịch tốt nhất: "
-            f"{_format_pct(best_trade)}\n"
-            f"• Giao dịch tệ nhất: "
-            f"{_format_pct(worst_trade)}\n"
-            f"• Hệ số lợi nhuận: "
-            f"{_format_number(profit_factor)}\n\n"
+            f"• Win rate: "
+            f"{_format_pct(win_rate)}\n\n"
 
-            f"🎯 CHIẾN LƯỢC 2\n"
-            f"• Tăng trưởng doanh thu > 15%\n"
-            f"• Tăng trưởng lợi nhuận sau thuế > 15%\n"
-            f"• ROE > 15%\n"
-            f"• Khối lượng đột biến ≥ 1.5× MA20\n"
-            f"• Giá đóng cửa > MA20\n"
-            f"• Điểm vào lệnh: Giá mở cửa phiên kế tiếp"
+            f"📊 CHẤT LƯỢNG GIAO DỊCH\n"
+            f"• Trung bình/giao dịch: "
+            f"{_format_pct(average_trade_return)}\n"
+            f"• Tốt nhất: "
+            f"{_format_pct(best_trade)}\n"
+            f"• Xấu nhất: "
+            f"{_format_pct(worst_trade)}\n"
+            f"• Profit Factor: "
+            f"{_format_number(profit_factor, 2)}\n\n"
+
+            f"⚠️ RỦI RO\n"
+            f"• Max Drawdown: "
+            f"{_format_pct(max_drawdown)}\n\n"
+
+            f"📌 TRẠNG THÁI\n"
+            f"• Vị thế đang mở: "
+            f"{open_position_text}\n"
+            f"• Pending action: "
+            f"{pending_action_text}"
         )
 
         await update.message.reply_text(
@@ -3229,8 +3356,15 @@ async def backtest(
 
     except Exception as error:
 
+        print(
+            f"[BACKTEST ERROR] "
+            f"{symbol}: {error}",
+            flush=True,
+        )
+
         await update.message.reply_text(
-            "❌ Không thể chạy backtest.\n\n"
+            f"❌ Không thể chạy backtest "
+            f"{symbol}.\n\n"
             f"Lỗi: {error}"
         )
 
