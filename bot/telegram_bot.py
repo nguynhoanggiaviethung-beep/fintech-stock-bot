@@ -3371,11 +3371,10 @@ async def market(
     """
     Tổng quan VNINDEX.
 
-    Nguồn dữ liệu:
-        - VNStock: dữ liệu VNINDEX
-        - market_updater.py: cập nhật + cache dữ liệu
+    VNINDEX được lấy qua VNStock và được quản lý bởi
+    MarketUpdater + MarketCache.
 
-    Không sử dụng DNSE cho VNINDEX.
+    Không sử dụng DNSE cho /market.
     """
 
     print("[MARKET] command received", flush=True)
@@ -3386,28 +3385,94 @@ async def market(
 
     try:
         # ----------------------------------------------------
-        # MARKET UPDATER
+        # Import cần thiết
         # ----------------------------------------------------
 
+        from data.market_cache import MarketCache
         from data.market_updater import MarketUpdater
+        from vnstock import stock_historical_data
 
-        updater = MarketUpdater()
+        # ----------------------------------------------------
+        # Hàm lấy dữ liệu VNINDEX
+        # ----------------------------------------------------
+
+        def fetch_vnindex():
+            end_date = pd.Timestamp.now().strftime(
+                "%Y-%m-%d"
+            )
+
+            start_date = (
+                pd.Timestamp.now()
+                - pd.Timedelta(days=60)
+            ).strftime("%Y-%m-%d")
+
+            print(
+                "[MARKET] fetching VNINDEX from VNStock",
+                flush=True,
+            )
+
+            df = stock_historical_data(
+                "VNINDEX",
+                start_date,
+                end_date,
+                "1D",
+                "index",
+            )
+
+            if df is None:
+                return pd.DataFrame()
+
+            if not isinstance(df, pd.DataFrame):
+                return pd.DataFrame()
+
+            if df.empty:
+                return pd.DataFrame()
+
+            return df
+
+        # ----------------------------------------------------
+        # Tạo Cache + Updater một lần
+        # ----------------------------------------------------
+        #
+        # Dùng attribute của function để giữ cache/updater
+        # giữa các lần gọi /market.
+        #
+        # Không cần sửa thêm code bên ngoài.
+        # ----------------------------------------------------
+
+        if not hasattr(market, "_market_cache"):
+
+            print(
+                "[MARKET] initializing MarketCache",
+                flush=True,
+            )
+
+            market._market_cache = MarketCache()
+
+            market._market_updater = MarketUpdater(
+                cache=market._market_cache,
+                fetch_func=fetch_vnindex,
+                interval_seconds=300,
+            )
+
+        market_cache = market._market_cache
+        market_updater = market._market_updater
+
+        # ----------------------------------------------------
+        # Lấy dữ liệu
+        # ----------------------------------------------------
 
         print(
-            "[MARKET] using market_updater",
+            "[MARKET] updating VNINDEX",
             flush=True,
         )
 
-        # ----------------------------------------------------
-        # Lấy dữ liệu VNINDEX
-        # ----------------------------------------------------
-
         market_df = await asyncio.to_thread(
-            updater.get_vnindex,
+            market_updater.update_once
         )
 
         print(
-            "[MARKET] market_updater returned",
+            "[MARKET] updater returned",
             flush=True,
         )
 
@@ -3417,6 +3482,10 @@ async def market(
 
         if (
             market_df is None
+            or not isinstance(
+                market_df,
+                pd.DataFrame,
+            )
             or market_df.empty
         ):
             raise ValueError(
@@ -3424,7 +3493,7 @@ async def market(
             )
 
         # ----------------------------------------------------
-        # Sắp xếp theo thời gian
+        # Chuẩn hóa thứ tự thời gian
         # ----------------------------------------------------
 
         if "datetime" in market_df.columns:
@@ -3445,13 +3514,8 @@ async def market(
 
         latest = market_df.iloc[-1]
 
-        close = latest.get(
-            "close"
-        )
-
-        volume = latest.get(
-            "volume"
-        )
+        close = latest.get("close")
+        volume = latest.get("volume")
 
         # ----------------------------------------------------
         # Previous close
@@ -3473,7 +3537,7 @@ async def market(
         if (
             close is not None
             and previous_close is not None
-            and previous_close != 0
+            and float(previous_close) != 0
         ):
 
             change_pct = (
@@ -3511,16 +3575,14 @@ async def market(
 
         else:
 
-            change_text = (
-                "⚪ 0.00%"
-            )
+            change_text = "⚪ 0.00%"
 
         # ----------------------------------------------------
-        # Latest datetime
+        # Latest date
         # ----------------------------------------------------
 
-        latest_datetime = (
-            latest.get("datetime")
+        latest_datetime = latest.get(
+            "datetime"
         )
 
         if latest_datetime is not None:
@@ -3532,6 +3594,23 @@ async def market(
         else:
 
             date_text = "N/A"
+
+        # ----------------------------------------------------
+        # Kiểm tra updater có lỗi trước đó không
+        # ----------------------------------------------------
+
+        last_error = (
+            market_updater.get_last_error()
+        )
+
+        cache_note = ""
+
+        if last_error is not None:
+
+            cache_note = (
+                "\n⚠️ DNSE/VNStock cập nhật chậm; "
+                "bot đang sử dụng dữ liệu cache gần nhất."
+            )
 
         # ----------------------------------------------------
         # Message
@@ -3558,7 +3637,9 @@ async def market(
             f"{len(market_df)}\n"
 
             "• Nguồn: VNStock\n"
-            "• Cache: Market Updater\n\n"
+            "• Bộ cập nhật: MarketUpdater\n"
+
+            f"{cache_note}\n\n"
 
             "💡 VNINDEX được sử dụng để cung cấp "
             "bối cảnh thị trường; tín hiệu BUY/SELL "
