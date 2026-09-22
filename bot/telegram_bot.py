@@ -3905,6 +3905,7 @@ def create_bot():
         Application
         .builder()
         .token(TOKEN)
+        .updater(None)
         .post_init(_post_init)
         .post_shutdown(_post_shutdown)
         .build()
