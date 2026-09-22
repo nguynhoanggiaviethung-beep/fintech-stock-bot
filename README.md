@@ -208,7 +208,9 @@ flowchart TB
 ## Luồng dữ liệu
 
 ```mermaid
-   SSI[SSI - Dữ liệu giá lịch sử]
+flowchart LR
+
+    SSI[SSI - Dữ liệu giá lịch sử]
     VS[VNStock - Dữ liệu tài chính]
     RT[VNStock Quote - Dữ liệu giao dịch gần thời gian thực]
 
@@ -369,3 +371,13 @@ flowchart TD
     SORT --> NORMALIZE
     NORMALIZE --> RESULT
 ```
+## Danh sách thành viên
+
+| STT | Họ và tên |
+|---:|---|
+| 1 | Nguyễn Hoàng Gia Việt Hưng |
+| 2 | Huỳnh Hoàng Huyên |
+| 3 | Đặng Như Huỳnh |
+| 4 | Nguyễn Thị Thanh Nhã |
+| 5 | Trương Thị Hoài Ny |
+| 6 | Trần Hoàng Thịnh |
