@@ -496,6 +496,10 @@ class MarketDataManager:
     # STOCK HISTORY
     # ============================================================
 
+    # ============================================================
+    # STOCK HISTORY
+    # ============================================================
+
     def _get_stock_history(
         self,
         symbol: str,
@@ -503,11 +507,141 @@ class MarketDataManager:
         resolution: str = "1D",
     ) -> pd.DataFrame:
         """
-        Lấy dữ liệu lịch sử cổ phiếu từ DNSE.
+        Lấy dữ liệu lịch sử cổ phiếu.
+
+        Primary:
+            VNStock
+
+        Fallback:
+            DNSE
+
+        Mục tiêu:
+            - Ưu tiên nguồn VNStock vì ổn định hơn trong project hiện tại.
+            - Chỉ gọi DNSE khi VNStock lỗi hoặc không trả dữ liệu hợp lệ.
+            - Giữ nguyên format DataFrame mà các module phía trên đang sử dụng.
         """
 
         if days <= 0:
             raise ValueError("days phải lớn hơn 0")
+
+        symbol = symbol.upper().strip()
+
+        if not symbol:
+            raise ValueError("symbol không được để trống")
+
+        # ========================================================
+        # PRIMARY: VNSTOCK
+        # ========================================================
+
+        try:
+            from vnstock import stock_historical_data
+
+            end_date = pd.Timestamp.now().strftime("%Y-%m-%d")
+
+            start_date = (
+                pd.Timestamp.now()
+                - pd.Timedelta(days=days)
+            ).strftime("%Y-%m-%d")
+
+            df = stock_historical_data(
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                resolution=resolution,
+                type="stock",
+            )
+
+            if (
+                isinstance(df, pd.DataFrame)
+                and not df.empty
+            ):
+                df = df.copy()
+
+                # VNStock thường trả datetime/time.
+                if "time" in df.columns:
+                    df = df.rename(
+                        columns={"time": "datetime"}
+                    )
+
+                if "datetime" not in df.columns:
+                    raise ValueError(
+                        "VNStock không trả về cột datetime."
+                    )
+
+                df["datetime"] = pd.to_datetime(
+                    df["datetime"]
+                )
+
+                df["timestamp"] = (
+                    df["datetime"]
+                    .astype("int64")
+                    // 10**9
+                )
+
+                df.insert(
+                    0,
+                    "symbol",
+                    symbol,
+                )
+
+                required_columns = [
+                    "symbol",
+                    "timestamp",
+                    "datetime",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                ]
+
+                missing_columns = [
+                    col
+                    for col in required_columns
+                    if col not in df.columns
+                ]
+
+                if missing_columns:
+                    raise ValueError(
+                        "VNStock thiếu các cột: "
+                        + ", ".join(missing_columns)
+                    )
+
+                df = df[
+                    required_columns
+                ].reset_index(drop=True)
+
+                self.cache.set(df)
+
+                print(
+                    f"[DATA MANAGER] "
+                    f"Historical {symbol}: "
+                    f"dùng VNStock ({len(df)} rows)"
+                )
+
+                return df
+
+            raise ValueError(
+                f"VNStock không trả dữ liệu historical cho {symbol}."
+            )
+
+        except Exception as vnstock_error:
+
+            print(
+                f"[DATA MANAGER WARNING] "
+                f"VNStock historical {symbol} lỗi: "
+                f"{vnstock_error}"
+            )
+
+        # ========================================================
+        # FALLBACK: DNSE
+        # ========================================================
+
+        print(
+            f"[DATA MANAGER] "
+            f"Historical {symbol}: "
+            f"fallback sang DNSE..."
+        )
 
         now_utc = pd.Timestamp.now(tz="UTC")
 
@@ -523,7 +657,7 @@ class MarketDataManager:
         )
 
         response_text = self.dnse.get_historical_ohlcv(
-            symbol=symbol.upper(),
+            symbol=symbol,
             start_timestamp=start_timestamp,
             end_timestamp=end_timestamp,
             resolution=resolution,
@@ -537,8 +671,10 @@ class MarketDataManager:
             df.insert(
                 0,
                 "symbol",
-                symbol.upper(),
+                symbol,
             )
+
+        self.cache.set(df)
 
         return df
 
