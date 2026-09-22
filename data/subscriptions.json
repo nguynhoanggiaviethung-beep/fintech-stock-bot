@@ -6,7 +6,8 @@
   },
   "last_signals": {
     "123456": {
-      "ABB": "NO_SIGNAL"
+      "ABB": "NO_SIGNAL",
+      "WATCH_FPT": "NO_SIGNAL"
     }
   }
 }

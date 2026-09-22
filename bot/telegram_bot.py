@@ -1691,6 +1691,14 @@ def build_stock_analysis(
     realtime_time = realtime_trade.get("time")
     realtime_match_type = realtime_trade.get("match_type")
 
+    # Nếu có realtime → dùng realtime.
+    # Nếu không có realtime → fallback về giá đóng cửa gần nhất.
+    if realtime_price is not None:
+        display_price = float(realtime_price)
+        price_source = "REALTIME"
+    else:
+        display_price = latest_market.get("close")
+        price_source = "LATEST_CLOSE"
     # --------------------------------------------------------
     # RETURN STRUCTURED RESULT
     # --------------------------------------------------------
@@ -1703,6 +1711,8 @@ def build_stock_analysis(
         "market_close": latest_market.get(
             "close"
         ),
+        "display_price": display_price,
+        "price_source": price_source,
         "market_volume": latest_market.get(
             "volume"
         ),
@@ -2136,7 +2146,9 @@ async def analyze(
 
             f"💰 THỊ TRƯỜNG\n"
             f"• Giá hiện tại: "
-            f"{_format_price(realtime_price) if realtime_price is not None else 'Chưa có dữ liệu realtime'}\n"
+            f"{_format_price(result['display_price'])}\n"
+            f"• Nguồn giá: "
+            f"{'Realtime' if result['price_source'] == 'REALTIME' else 'Giá đóng cửa gần nhất'}\n"
             f"• Giá đóng cửa gần nhất: "
             f"{_format_price(result['market_close'])}\n"
             f"• Khối lượng phiên gần nhất: "
@@ -2152,7 +2164,7 @@ async def analyze(
             f"• Thời gian: "
             f"{realtime_time or 'Chưa có dữ liệu'}\n"
             f"• Trạng thái: "
-            f"{'Đang có dữ liệu realtime' if realtime_price is not None else 'Dữ liệu realtime hiện chưa khả dụng'}\n\n"
+            f"{'Đang có dữ liệu realtime' if realtime_price is not None else 'Dữ liệu realtime hiện chưa khả dụng  (ngoài thời gian giao dịch hoặc dữ liệu chưa được mở)'}\n\n"
 
             f"🏦 PHÂN TÍCH CƠ BẢN\n"
             f"• Kỳ báo cáo: "
